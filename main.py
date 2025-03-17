@@ -380,7 +380,7 @@ class TradingBot:
             return df
         
     def get_available_symbols(self):
-        """Get available symbols from the broker with spread information"""
+        """Get available symbols from the broker with improved spread filtering"""
         if not self.connected:
             if not self.connect():
                 return []
@@ -398,26 +398,33 @@ class TradingBot:
                 symbol_name = symbol.name
                 symbol_info = mt5.symbol_info(symbol_name)
                 
-                # Include forex majors, metals, and major indices with spread info
-                if (any(pair in symbol_name for pair in ["USD", "EUR", "GBP", "JPY", "AUD", "NZD", "CAD", "CHF"]) or
-                    any(pair in symbol_name for pair in ["SPX", "SP500", "US30", "NASDAQ", "NDX", "NAS100", "DJ", "DAX", "FTSE"]) or
-                    any(metal in symbol_name for metal in ["GOLD", "SILVER", "XAU", "XAG"])):
+                if symbol_info is None:
+                    continue
                     
-                    spread = symbol_info.spread if symbol_info else 999
-                    # Check if symbol is tradable using visible and trade_mode properties
-                    is_tradable = False
-                    if symbol_info:
-                        is_tradable = symbol_info.visible and symbol_info.trade_mode != mt5.SYMBOL_TRADE_MODE_DISABLED
+                # Check if symbol is tradable (visible and not disabled)
+                is_tradable = symbol_info.visible and symbol_info.trade_mode != mt5.SYMBOL_TRADE_MODE_DISABLED
+                
+                # Calculate the spread in pips for proper sorting
+                pip_size = self._get_pip_size(symbol_name, symbol_info.digits)
+                spread_in_pips = symbol_info.spread * pip_size * 10000
+                
+                # Include forex majors, metals, and major indices with spread info
+                if ((any(pair in symbol_name for pair in ["USD", "EUR", "GBP", "JPY", "AUD", "NZD", "CAD", "CHF"]) or
+                    any(pair in symbol_name for pair in ["SPX", "SP500", "US30", "NASDAQ", "NDX", "NAS100", "DJ", "DAX", "FTSE"]) or
+                    any(metal in symbol_name for metal in ["GOLD", "SILVER", "XAU", "XAG"])) and
+                    is_tradable):
                     
                     tradable_symbols.append({
                         'name': symbol_name,
-                        'spread': spread,
-                        'digits': symbol_info.digits if symbol_info else 5,
-                        'trade_allowed': is_tradable
+                        'spread': spread_in_pips,  # Store spread in pips for better comparison
+                        'raw_spread': symbol_info.spread,  # Keep raw spread for reference
+                        'digits': symbol_info.digits,
+                        'pip_value': pip_size,
+                        'volume_min': symbol_info.volume_min,
+                        'volume_step': symbol_info.volume_step
                     })
             
-            # Sort by spread (lowest first) and filter to tradable only
-            tradable_symbols = [s for s in tradable_symbols if s['trade_allowed']]
+            # Sort by spread (lowest first)
             tradable_symbols.sort(key=lambda x: x['spread'])
             
             # Extract just the names for compatibility with existing code
@@ -427,9 +434,19 @@ class TradingBot:
             self._update_index_mapping(symbol_names)
             
             logger.info(f"Found {len(symbol_names)} tradable symbols, sorted by spread")
-            return symbol_names[:100]  # Return top 100 symbols by spread
+            
+            # Return top N symbols with lowest spread
+            top_symbols = symbol_names[:30]  # Get top 30 symbols with lowest spread
+            
+            # Log the top symbols with their spreads for reference
+            for i, symbol in enumerate(tradable_symbols[:30]):
+                logger.debug(f"Top {i+1}: {symbol['name']} - Spread: {symbol['spread']:.1f} pips")
+            
+            return top_symbols
         except Exception as e:
             logger.error(f"Error getting symbols: {e}")
+            import traceback
+            logger.error(traceback.format_exc())
             return []
 
     def _update_index_mapping(self, available_symbols):
@@ -1013,14 +1030,29 @@ class TradingBot:
             stop_distance_price = abs(entry - stop_loss)
             stop_distance_pips = stop_distance_price / pip_size
             
-            # Validate stop distance is reasonable
-            if stop_distance_pips < 5:
-                logger.warning(f"{symbol}: Stop distance too small: {stop_distance_pips:.1f} pips")
-                stop_distance_pips = max(stop_distance_pips, 5)  # Minimum 5 pip stop
+            # Validate stop distance is reasonable - dynamic based on symbol type
+            min_stop = 5  # Default minimum
             
-            if stop_distance_pips > 200:
-                logger.warning(f"{symbol}: Stop distance too large: {stop_distance_pips:.1f} pips")
-                stop_distance_pips = min(stop_distance_pips, 200)  # Maximum 200 pip stop for most instruments
+            # Determine max stop size based on symbol type - more flexible limits
+            if "JPY" in symbol:
+                max_stop = 300  # JPY pairs can have wider stops
+            elif any(index in symbol for index in ["US30", "SPX", "NAS", "DAX", "FTSE"]):
+                max_stop = 500  # Indices can have wider stops
+            elif any(metal in symbol for metal in ["XAU", "GOLD", "XAG", "SILVER"]):
+                max_stop = 400  # Metals can have wider stops
+            elif any(crypto in symbol for crypto in ["BTC", "ETH", "LTC"]):
+                max_stop = 1000  # Cryptos need much wider stops
+            else:
+                max_stop = 200  # Standard forex pairs
+                
+            # Check stop size
+            if stop_distance_pips < min_stop:
+                logger.warning(f"{symbol}: Stop distance too small: {stop_distance_pips:.1f} pips, using {min_stop} pips")
+                stop_distance_pips = min_stop
+            
+            if stop_distance_pips > max_stop:
+                logger.warning(f"{symbol}: Stop distance too large: {stop_distance_pips:.1f} pips, using {max_stop} pips")
+                stop_distance_pips = max_stop
             
             # Calculate position size
             if stop_distance_pips > 0:
@@ -1353,7 +1385,7 @@ class TradingBot:
     
     # Fix for the run_trading_cycle function - ensure all signal dictionaries have consistent keys
     def run_trading_cycle(self):
-        """Enhanced trading cycle with improved signal filtering"""
+        """Enhanced trading cycle with multi-threaded analysis for better performance"""
         if not self.connected:
             logger.info("Not connected to MT5. Attempting to connect...")
             if not self.connect():
@@ -1372,31 +1404,113 @@ class TradingBot:
         # Calculate market condition metrics first (overall market state)
         market_condition = self._analyze_market_condition()
         
-        # Track how many signals per direction we're finding
-        buy_signals = 0
-        sell_signals = 0
-        
-        for symbol in current_symbols:
-            signals = self.analyze_symbol(symbol)
-            if signals:
-                # Count signal directions
-                for signal in signals:
-                    # Ensure standard keys exist in all signal dictionaries
-                    if "confirmations" not in signal:
-                        signal["confirmations"] = []
-                    if "warnings" not in signal:
-                        signal["warnings"] = []
+        # Use concurrent.futures to analyze symbols in parallel
+        try:
+            from concurrent.futures import ThreadPoolExecutor
+            import os
+            
+            # Determine optimal number of workers based on CPU cores
+            max_workers = min(os.cpu_count() or 4, 8)  # Use up to 8 workers max
+            
+            # Create a list of symbol/timeframe combinations to analyze
+            analysis_tasks = []
+            for symbol in current_symbols[:20]:  # Limit to top 20 symbols to avoid overload
+                for timeframe in self.config["trading"]["timeframes"]:
+                    analysis_tasks.append((symbol, timeframe))
+            
+            # Randomize the order to avoid constantly scanning the same symbols first
+            import random
+            random.shuffle(analysis_tasks)
+            
+            # Define a worker function for ThreadPoolExecutor
+            def analyze_symbol_timeframe(args):
+                symbol, timeframe = args
+                try:
+                    # Get and process market data
+                    df = self.get_market_data(symbol, timeframe)
+                    if df is None or len(df) == 0:
+                        return []
                         
-                    if signal["action"] == "buy":
-                        buy_signals += 1
-                    else:
-                        sell_signals += 1
+                    # Calculate indicators
+                    df = self.calculate_indicators(df)
+                    if df is None:
+                        return []
+                    
+                    # Analyze price action
+                    pa_signals, levels = self.analyze_price_action(df)
+                    if pa_signals is None:
+                        return []
+                    
+                    # If we have a signal with sufficient strength
+                    if (pa_signals["buy"] or pa_signals["sell"]) and pa_signals["strength"] >= 5:
+                        signal = {
+                            "symbol": symbol,
+                            "timeframe": timeframe,
+                            "action": "buy" if pa_signals["buy"] else "sell",
+                            "strength": pa_signals["strength"],
+                            "patterns": pa_signals["patterns"],
+                            "confirmations": pa_signals.get("confirmations", []),
+                            "warnings": pa_signals.get("warnings", []),
+                            "entry": levels["entry"],
+                            "stop_loss": levels["stop_loss"],
+                            "take_profit": levels["take_profit"],
+                            "timestamp": datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+                        }
+                        
+                        # Calculate position size
+                        lot_size = self.calculate_position_size(
+                            symbol, levels["entry"], levels["stop_loss"]
+                        )
+                        signal["lot_size"] = lot_size
+                        
+                        return [signal]
+                    return []
+                except Exception as e:
+                    logger.error(f"Error analyzing {symbol} {timeframe}: {e}")
+                    return []
+            
+            # Execute analysis in parallel
+            signals_list = []
+            with ThreadPoolExecutor(max_workers=max_workers) as executor:
+                logger.info(f"Analyzing {len(analysis_tasks)} symbol/timeframe combinations with {max_workers} workers")
+                results = list(executor.map(analyze_symbol_timeframe, analysis_tasks))
                 
-                # Add market condition info to each signal
-                for signal in signals:
-                    signal["market_condition"] = market_condition
-                    all_signals.append(signal)
-        
+                # Flatten the results
+                for result in results:
+                    signals_list.extend(result)
+            
+            logger.info(f"Parallel analysis completed, found {len(signals_list)} initial signals")
+            all_signals = signals_list
+            
+        except ImportError:
+            # Fallback to single-threaded approach if concurrent.futures is not available
+            logger.warning("ThreadPoolExecutor not available, using single-threaded analysis")
+            
+            # Track how many signals per direction we're finding
+            buy_signals = 0
+            sell_signals = 0
+            
+            for symbol in current_symbols[:20]:
+                signals = self.analyze_symbol(symbol)
+                if signals:
+                    # Count signal directions
+                    for signal in signals:
+                        # Ensure standard keys exist in all signal dictionaries
+                        if "confirmations" not in signal:
+                            signal["confirmations"] = []
+                        if "warnings" not in signal:
+                            signal["warnings"] = []
+                            
+                        if signal["action"] == "buy":
+                            buy_signals += 1
+                        else:
+                            sell_signals += 1
+                    
+                    # Add market condition info to each signal
+                    for signal in signals:
+                        signal["market_condition"] = market_condition
+                        all_signals.append(signal)
+                        
         # Adjust signal strengths based on correlation with market condition
         if market_condition.get('bias') == 'bullish':
             # Strengthen buy signals, weaken sell signals
@@ -1427,7 +1541,7 @@ class TradingBot:
             # Only consider strong signals (strength >= 6)
             if signal["strength"] >= 6:
                 # Skip signals with too many warnings
-                if len(signal.get("warnings", [])) <= 2:  # Use get with default empty list
+                if len(signal.get("warnings", [])) <= 2:
                     filtered_signals.append(signal)
         
         # Log signal summary
@@ -1505,10 +1619,14 @@ class TradingBot:
     
     # Update the _trading_loop method to be more responsive
     def _trading_loop(self):
-        """Main trading loop running in a separate thread"""
+        """Main trading loop running in a separate thread with adaptive timing"""
         logger.info("Trading loop started")
         
         last_analysis_time = datetime.now() - timedelta(minutes=5)  # Force first analysis immediately
+        analysis_interval = 60  # Default analysis interval in seconds
+        
+        # Track symbols that have been recently analyzed to avoid repeats
+        recently_analyzed = set()
         
         while self.running:
             try:
@@ -1524,23 +1642,48 @@ class TradingBot:
                 
                 # Only run full analysis periodically to avoid hammering the API
                 time_since_last = (datetime.now() - last_analysis_time).total_seconds()
-                if time_since_last >= 60:  # Run analysis once per minute at most
+                if time_since_last >= analysis_interval:
+                    # Clear the recently analyzed set periodically (every 10 minutes)
+                    if time_since_last >= 600:  # 10 minutes in seconds
+                        recently_analyzed.clear()
+                    
                     # Run analysis and get trading signals
                     signals = self.run_trading_cycle()
                     last_analysis_time = datetime.now()
                     
                     # Execute trades if auto-trading is enabled
                     if self.config.get("auto_trading", True) and signals:
-                        logger.info(f"Found {len(signals)} potential trading opportunities")
-                        executed_trades = self.auto_trade(signals)
-                        if executed_trades:
-                            logger.info(f"Executed {len(executed_trades)} trades")
+                        # Filter out recently analyzed symbols to avoid repeats
+                        new_signals = [s for s in signals if f"{s['symbol']}_{s['timeframe']}" not in recently_analyzed]
+                        
+                        if new_signals:
+                            logger.info(f"Found {len(new_signals)} new trading opportunities")
+                            executed_trades = self.auto_trade(new_signals)
+                            
+                            # Add the symbols to recently analyzed set
+                            for signal in new_signals:
+                                recently_analyzed.add(f"{signal['symbol']}_{signal['timeframe']}")
+                                
+                            if executed_trades:
+                                logger.info(f"Executed {len(executed_trades)} trades")
+                        else:
+                            logger.info("No new trading opportunities after filtering recently analyzed symbols")
+                    
+                    # Adaptive analysis interval based on market activity
+                    if len(signals) > 0:
+                        # More signals = more market activity = analyze more frequently (min 30 seconds)
+                        analysis_interval = max(30, 90 - len(signals) * 5) 
+                    else:
+                        # No signals = less market activity = analyze less frequently (max 2 minutes)
+                        analysis_interval = min(120, analysis_interval + 10)
                 
                 # Quick sleep to keep the thread responsive
                 time.sleep(1)
                 
             except Exception as e:
                 logger.error(f"Error in trading loop: {e}")
+                import traceback
+                logger.error(traceback.format_exc())
                 time.sleep(5)  # Shorter sleep after error
         
         logger.info("Trading loop stopped")
