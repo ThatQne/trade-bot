@@ -38,7 +38,7 @@ class TradingBotGUI:
         self.selected_symbol = tk.StringVar(value="EURUSD")
         self.selected_timeframe = tk.StringVar(value="H1")
         self.auto_trading = tk.BooleanVar(value=True)
-        self.risk_percent = tk.DoubleVar(value=2.0)
+        self.risk_percent = tk.DoubleVar(value=self.bot.config["trading"]["risk_percent"])
         
         # Load theme preference
         self.theme = tk.StringVar(value="dark")
@@ -213,7 +213,7 @@ class TradingBotGUI:
             command=self.update_auto_trading
         )
         self.auto_trading_check.grid(row=0, column=2, padx=5, pady=5)
-        
+    
         # Risk slider
         ttk.Label(controls_frame, text="Risk %:").grid(row=1, column=0, padx=5, pady=5)
         risk_slider = ttk.Scale(
@@ -221,7 +221,8 @@ class TradingBotGUI:
             variable=self.risk_percent, command=self.update_risk
         )
         risk_slider.grid(row=1, column=1, padx=5, pady=5, sticky="ew")
-        self.risk_value_label = ttk.Label(controls_frame, text="2.0%")
+        risk_slider.bind("<ButtonRelease-1>", lambda event: self.update_risk("end"))
+        self.risk_value_label = ttk.Label(controls_frame, text=f"{self.risk_percent.get()}%")
         self.risk_value_label.grid(row=1, column=2, padx=5, pady=5)
         
         # Configure grid weights
@@ -755,15 +756,24 @@ class TradingBotGUI:
         self.bot.save_config()
     
     def update_risk(self, *args):
-        """Update risk percentage setting and label, directly affecting trading"""
-        value = round(float(self.risk_percent.get()), 1)
-        self.risk_value_label.config(text=f"{value}%")
-        
-        # Update the risk percent in the config
-        if "trading" in self.bot.config:
-            self.bot.config["trading"]["risk_percent"] = value
-            self.bot.save_config()
-            logger.info(f"Risk percentage updated to {value}%")
+        """Update risk percentage setting and label without excessive saves"""
+        try:
+            # Round to one decimal place
+            value = round(float(self.risk_percent.get()), 1)
+            self.risk_value_label.config(text=f"{value}%")
+            
+            # Only update the config value in memory, don't save to file during dragging
+            if "trading" in self.bot.config:
+                self.bot.config["trading"]["risk_percent"] = value
+                
+                # We'll save only when the slider is released (binding the slider release event)
+                if hasattr(args, '__len__') and len(args) > 0 and args[0] == "end":
+                    # Only save when slider is released
+                    self.bot.save_config()
+                    logger.info(f"Risk percentage updated to {value}%")
+        except Exception as e:
+            # Add error handling to prevent crashes
+            logger.error(f"Error updating risk: {e}")
     
     def refresh_account_info(self):
         """Refresh account information"""
