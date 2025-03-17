@@ -357,7 +357,7 @@ class TradingBot:
             return df
         
     def get_available_symbols(self):
-        """Get all available symbols from the broker without unnecessary filtering"""
+        """Get all available symbols using visibility as the tradability indicator"""
         if not self.connected:
             if not self.connect():
                 return []
@@ -370,61 +370,114 @@ class TradingBot:
                 return []
             
             # Process all symbols
-            tradable_symbols = []
+            all_symbol_data = []
+            visible_symbols_data = []
+            
             for symbol in all_symbols:
                 symbol_name = symbol.name
                 symbol_info = mt5.symbol_info(symbol_name)
                 
                 if symbol_info is None:
                     continue
-                    
-                # Get the latest tick to get real-time spread
-                tick = mt5.symbol_info_tick(symbol_name)
-                if tick:
-                    # Calculate real spread
-                    real_spread = tick.ask - tick.bid
-                    # Convert to pips based on digits
-                    pip_size = self._get_pip_size(symbol_name, symbol_info.digits)
-                    spread_in_pips = real_spread / pip_size * 10
-                else:
-                    # Fallback to symbol info spread if tick isn't available
-                    spread_in_pips = symbol_info.spread / 10  # Convert points to pips
                 
-                # Store symbol info
-                tradable_symbols.append({
+                # Use visibility as the tradability indicator (as requested)
+                is_visible = bool(symbol_info.visible)
+                # Considering visible symbols as tradable
+                is_tradable = is_visible
+                
+                # Get the latest tick to calculate real-time spread
+                tick = mt5.symbol_info_tick(symbol_name)
+                pip_size = self._get_pip_size(symbol_name, symbol_info.digits)
+                
+                spread_in_pips = 0
+                spread_percentage = 0
+                
+                if tick and tick.ask > 0 and tick.bid > 0:
+                    # Calculate real-time spread
+                    real_spread = tick.ask - tick.bid
+                    # Convert to pips
+                    spread_in_pips = real_spread / pip_size * 10
+                    # Calculate percentage spread
+                    spread_percentage = (real_spread / tick.bid) * 100 if tick.bid > 0 else 0
+                else:
+                    # Fallback to symbol info spread
+                    spread_in_pips = symbol_info.spread / 10
+                
+                # Create symbol data record
+                symbol_data = {
                     'name': symbol_name,
                     'spread': spread_in_pips,
+                    'spread_percentage': spread_percentage,
                     'digits': symbol_info.digits,
                     'pip_value': pip_size,
                     'volume_min': getattr(symbol_info, 'volume_min', 0.01),
                     'volume_step': getattr(symbol_info, 'volume_step', 0.01),
-                    'type': self._classify_symbol_type(symbol_name)
-                })
+                    'type': self._classify_symbol_type(symbol_name),
+                    'is_tradable': is_tradable,
+                    'is_visible': is_visible
+                }
+                
+                # Store in appropriate lists
+                all_symbol_data.append(symbol_data)
+                if is_visible:  # Using visibility as tradability
+                    visible_symbols_data.append(symbol_data)
             
-            # Sort by spread (lowest first)
-            tradable_symbols.sort(key=lambda x: x['spread'])
+            # Sort all symbols by spread percentage
+            all_symbol_data.sort(key=lambda x: x['spread_percentage'])
             
-            # Log the total number of symbols found
-            logger.info(f"Found {len(tradable_symbols)} available symbols from broker")
+            # Count visible (tradable) symbols
+            visible_count = len(visible_symbols_data)
             
-            # Extract just the names for compatibility with existing code
-            symbol_names = [s['name'] for s in tradable_symbols]
+            # Log summary
+            logger.info(f"Found {len(all_symbol_data)} available symbols from broker ({visible_count} visible/tradable)")
             
-            # Print the top 30 symbols with their spreads for reference
-            for i, symbol in enumerate(tradable_symbols[:30]):
-                logger.info(f"Top {i+1}: {symbol['name']} - Spread: {symbol['spread']:.4f} pips - Type: {symbol['type']}")
+            # Store lists for different purposes
+            all_names = [s['name'] for s in all_symbol_data]
+            visible_names = [s['name'] for s in visible_symbols_data]
             
-            # Return all symbols but mark top symbols for analysis priority based on config
+            # Store visible symbols list for auto-trading (treating visible as tradable)
+            self.tradable_symbols = visible_names
+            
+            # Log the top symbols
+            for i, symbol in enumerate(all_symbol_data[:30]):
+                visibility_text = "visible/tradable" if symbol['is_visible'] else "hidden/non-tradable"
+                logger.info(f"Top {i+1}: {symbol['name']} - "
+                        f"Spread: {symbol['spread']:.2f} pips "
+                        f"({symbol['spread_percentage']:.5f}%) - "
+                        f"Type: {symbol['type']} - {visibility_text}")
+            
+            # Prepare priority symbols for analysis
             symbols_to_analyze = self.config.get("analysis", {}).get("symbols_to_analyze", 30)
-            self.analysis_priority_symbols = symbol_names[:symbols_to_analyze]
             
-            return symbol_names  # Return all symbols
+            # Create priority list that includes ALL visible symbols plus other symbols up to the limit
+            priority_symbols = []
+            
+            # First, add all visible/tradable symbols
+            priority_symbols.extend(visible_names)
+            
+            # Then add non-visible symbols until we reach the limit
+            remaining_slots = symbols_to_analyze - len(priority_symbols)
+            if remaining_slots > 0:
+                # Get non-visible symbols that aren't already in the list
+                non_visible_symbols = [s['name'] for s in all_symbol_data 
+                                    if s['name'] not in priority_symbols]
+                # Add as many as we need
+                priority_symbols.extend(non_visible_symbols[:remaining_slots])
+            
+            # Store the priority symbols
+            self.analysis_priority_symbols = priority_symbols
+            
+            logger.info(f"Analysis priority list includes {len(visible_names)} visible/tradable symbols + "
+                    f"{len(priority_symbols) - len(visible_names)} additional symbols")
+            
+            return all_names  # Return all symbols for comprehensive data
+            
         except Exception as e:
             logger.error(f"Error getting symbols: {e}")
             import traceback
             logger.error(traceback.format_exc())
             return []
-        
+            
     def _classify_trade_type(self, timeframe, signal_strength):
         """Enhanced trade type classification with more detailed information"""
         # Base classification on timeframe
@@ -1237,7 +1290,7 @@ class TradingBot:
             return 0.0
     
     def execute_trade(self, symbol, trade_type, lot_size, entry_price=0, stop_loss=0, take_profit=0):
-        """Execute a trade on MT5"""
+        """Execute a trade on MT5 with better error handling for non-tradable symbols"""
         if not self.connected:
             return None
         
@@ -1246,7 +1299,7 @@ class TradingBot:
             if trade_type.lower() not in ["buy", "sell"]:
                 logger.error(f"Invalid trade type: {trade_type}")
                 return None
-                
+                    
             # Set up trade type
             trade_type_map = {
                 "buy": mt5.ORDER_TYPE_BUY,
@@ -1262,7 +1315,10 @@ class TradingBot:
                 return None
             
             # Check if symbol is available for trading
-            if not symbol_info.visible or not symbol_info.trade_allowed:
+            is_visible = bool(symbol_info.visible)
+            is_tradable = bool(is_visible and getattr(symbol_info, 'trade_mode', 0) == 0)
+            
+            if not is_tradable:
                 logger.error(f"Symbol {symbol} is not available for trading")
                 return None
             
@@ -1293,7 +1349,7 @@ class TradingBot:
             else:
                 logger.info(f"Trade executed successfully: {trade_type} {lot_size} {symbol} at {price}")
                 return result
-                
+                    
         except Exception as e:
             logger.error(f"Error executing trade: {e}")
             return None
@@ -1742,7 +1798,7 @@ class TradingBot:
         return filtered_signals
     
     def auto_trade(self, signals):
-        """Automatically execute trades based on signals"""
+        """Automatically execute trades based on signals - only for tradable symbols"""
         if not self.connected or not signals:
             return []
         
@@ -1751,6 +1807,21 @@ class TradingBot:
         open_positions_count = len(positions) if positions is not None else 0
         max_positions = self.config["trading"]["max_open_trades"]
         
+        # Make sure we have the list of tradable symbols
+        if not hasattr(self, 'tradable_symbols'):
+            self.get_available_symbols()
+            
+        # Filter signals to only tradable symbols
+        tradable_signals = [signal for signal in signals 
+                        if signal["symbol"] in getattr(self, 'tradable_symbols', [])]
+        
+        if len(tradable_signals) < len(signals):
+            logger.info(f"Filtered out {len(signals) - len(tradable_signals)} non-tradable symbols from auto-trading")
+        
+        if not tradable_signals:
+            logger.info("No tradable signals available for auto-trading")
+            return []
+        
         executed_trades = []
         
         # If we have room for more positions
@@ -1758,28 +1829,31 @@ class TradingBot:
             available_slots = max_positions - open_positions_count
             
             # Take the strongest signals first, limited by available slots
-            for signal in signals[:available_slots]:
-                # Execute the trade
-                result = self.execute_trade(
-                    signal["symbol"],
-                    signal["action"],
-                    signal["lot_size"],
-                    signal["entry"],
-                    signal["stop_loss"],
-                    signal["take_profit"]
-                )
-                
-                if result is not None:
-                    executed_trades.append({
-                        "ticket": result.order,
-                        "symbol": signal["symbol"],
-                        "action": signal["action"],
-                        "lot_size": signal["lot_size"],
-                        "entry": signal["entry"],
-                        "stop_loss": signal["stop_loss"],
-                        "take_profit": signal["take_profit"],
-                        "timestamp": datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-                    })
+            for signal in tradable_signals[:available_slots]:
+                try:
+                    # Execute the trade
+                    result = self.execute_trade(
+                        signal["symbol"],
+                        signal["action"],
+                        signal["lot_size"],
+                        signal["entry"],
+                        signal["stop_loss"],
+                        signal["take_profit"]
+                    )
+                    
+                    if result is not None:
+                        executed_trades.append({
+                            "ticket": result.order,
+                            "symbol": signal["symbol"],
+                            "action": signal["action"],
+                            "lot_size": signal["lot_size"],
+                            "entry": signal["entry"],
+                            "stop_loss": signal["stop_loss"],
+                            "take_profit": signal["take_profit"],
+                            "timestamp": datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+                        })
+                except Exception as e:
+                    logger.error(f"Error executing trade for {signal['symbol']}: {e}")
         
         return executed_trades
     

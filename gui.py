@@ -367,7 +367,7 @@ class TradingBotGUI:
         self.setup_log_handler()
     
     def create_settings_tab(self):
-        """Create the settings tab"""
+        """Create the settings tab with all configuration options"""
         # Main settings frame
         settings_frame = ttk.Frame(self.settings_frame)
         settings_frame.pack(fill="both", expand=True, padx=10, pady=10)
@@ -403,51 +403,85 @@ class TradingBotGUI:
         trading_frame = ttk.Frame(settings_notebook)
         settings_notebook.add(trading_frame, text="Trading")
         
-        ttk.Label(trading_frame, text="Symbols (comma-separated):").grid(row=0, column=0, sticky="w", padx=5, pady=5)
-        self.symbols_entry = ttk.Entry(trading_frame, width=50)
-        self.symbols_entry.insert(0, ",".join(self.bot.config["trading"]["symbols"]))
-        self.symbols_entry.grid(row=0, column=1, padx=5, pady=5)
-        
-        ttk.Label(trading_frame, text="Timeframes (comma-separated):").grid(row=1, column=0, sticky="w", padx=5, pady=5)
+        ttk.Label(trading_frame, text="Timeframes (comma-separated):").grid(row=0, column=0, sticky="w", padx=5, pady=5)
         self.timeframes_entry = ttk.Entry(trading_frame)
         self.timeframes_entry.insert(0, ",".join(self.bot.config["trading"]["timeframes"]))
-        self.timeframes_entry.grid(row=1, column=1, sticky="w", padx=5, pady=5)
+        self.timeframes_entry.grid(row=0, column=1, sticky="w", padx=5, pady=5)
         
-        ttk.Label(trading_frame, text="Risk %:").grid(row=2, column=0, sticky="w", padx=5, pady=5)
+        ttk.Label(trading_frame, text="Risk %:").grid(row=1, column=0, sticky="w", padx=5, pady=5)
         self.risk_entry = ttk.Entry(trading_frame)
         self.risk_entry.insert(0, str(self.bot.config["trading"]["risk_percent"]))
-        self.risk_entry.grid(row=2, column=1, sticky="w", padx=5, pady=5)
+        self.risk_entry.grid(row=1, column=1, sticky="w", padx=5, pady=5)
         
-        ttk.Label(trading_frame, text="Max Risk %:").grid(row=3, column=0, sticky="w", padx=5, pady=5)
+        ttk.Label(trading_frame, text="Max Risk %:").grid(row=2, column=0, sticky="w", padx=5, pady=5)
         self.max_risk_entry = ttk.Entry(trading_frame)
         self.max_risk_entry.insert(0, str(self.bot.config["trading"]["max_risk_percent"]))
-        self.max_risk_entry.grid(row=3, column=1, sticky="w", padx=5, pady=5)
+        self.max_risk_entry.grid(row=2, column=1, sticky="w", padx=5, pady=5)
         
-        ttk.Label(trading_frame, text="Min Risk:Reward:").grid(row=4, column=0, sticky="w", padx=5, pady=5)
+        ttk.Label(trading_frame, text="Min Risk:Reward:").grid(row=3, column=0, sticky="w", padx=5, pady=5)
         self.min_rr_entry = ttk.Entry(trading_frame)
         self.min_rr_entry.insert(0, str(self.bot.config["trading"]["min_risk_reward"]))
-        self.min_rr_entry.grid(row=4, column=1, sticky="w", padx=5, pady=5)
+        self.min_rr_entry.grid(row=3, column=1, sticky="w", padx=5, pady=5)
         
-        ttk.Label(trading_frame, text="Max Open Trades:").grid(row=5, column=0, sticky="w", padx=5, pady=5)
+        ttk.Label(trading_frame, text="Max Open Trades:").grid(row=4, column=0, sticky="w", padx=5, pady=5)
         self.max_trades_entry = ttk.Entry(trading_frame)
         self.max_trades_entry.insert(0, str(self.bot.config["trading"]["max_open_trades"]))
-        self.max_trades_entry.grid(row=5, column=1, sticky="w", padx=5, pady=5)
+        self.max_trades_entry.grid(row=4, column=1, sticky="w", padx=5, pady=5)
         
         # Trailing stop settings
         self.use_trailing = tk.BooleanVar(value=self.bot.config["trading"]["use_trailing_stop"])
         ttk.Checkbutton(
             trading_frame, text="Use Trailing Stop", variable=self.use_trailing
-        ).grid(row=6, column=0, columnspan=2, sticky="w", padx=5, pady=5)
+        ).grid(row=5, column=0, columnspan=2, sticky="w", padx=5, pady=5)
         
-        ttk.Label(trading_frame, text="Trailing Activation (pips):").grid(row=7, column=0, sticky="w", padx=5, pady=5)
+        ttk.Label(trading_frame, text="Trailing Activation (pips):").grid(row=6, column=0, sticky="w", padx=5, pady=5)
         self.trailing_activation_entry = ttk.Entry(trading_frame)
         self.trailing_activation_entry.insert(0, str(self.bot.config["trading"]["trailing_stop_activation"]))
-        self.trailing_activation_entry.grid(row=7, column=1, sticky="w", padx=5, pady=5)
+        self.trailing_activation_entry.grid(row=6, column=1, sticky="w", padx=5, pady=5)
         
-        ttk.Label(trading_frame, text="Trailing Distance (pips):").grid(row=8, column=0, sticky="w", padx=5, pady=5)
+        ttk.Label(trading_frame, text="Trailing Distance (pips):").grid(row=7, column=0, sticky="w", padx=5, pady=5)
         self.trailing_distance_entry = ttk.Entry(trading_frame)
         self.trailing_distance_entry.insert(0, str(self.bot.config["trading"]["trailing_stop_distance"]))
-        self.trailing_distance_entry.grid(row=8, column=1, sticky="w", padx=5, pady=5)
+        self.trailing_distance_entry.grid(row=7, column=1, sticky="w", padx=5, pady=5)
+        
+        # Analysis settings (new tab)
+        analysis_frame = ttk.Frame(settings_notebook)
+        settings_notebook.add(analysis_frame, text="Analysis")
+        
+        ttk.Label(analysis_frame, text="Minimum Signal Strength:").grid(row=0, column=0, sticky="w", padx=5, pady=5)
+        self.min_signal_strength_entry = ttk.Entry(analysis_frame)
+        self.min_signal_strength_entry.insert(0, str(self.bot.config.get("analysis", {}).get("min_signal_strength", 4.0)))
+        self.min_signal_strength_entry.grid(row=0, column=1, sticky="w", padx=5, pady=5)
+        
+        ttk.Label(analysis_frame, text="Maximum Warnings:").grid(row=1, column=0, sticky="w", padx=5, pady=5)
+        self.max_warnings_entry = ttk.Entry(analysis_frame)
+        self.max_warnings_entry.insert(0, str(self.bot.config.get("analysis", {}).get("max_warnings", 3)))
+        self.max_warnings_entry.grid(row=1, column=1, sticky="w", padx=5, pady=5)
+        
+        ttk.Label(analysis_frame, text="Signal Expiry (minutes):").grid(row=2, column=0, sticky="w", padx=5, pady=5)
+        self.signal_expiry_entry = ttk.Entry(analysis_frame)
+        self.signal_expiry_entry.insert(0, str(self.bot.config.get("analysis", {}).get("signal_expiry_minutes", 5)))
+        self.signal_expiry_entry.grid(row=2, column=1, sticky="w", padx=5, pady=5)
+        
+        ttk.Label(analysis_frame, text="Symbols to Analyze:").grid(row=3, column=0, sticky="w", padx=5, pady=5)
+        self.symbols_to_analyze_entry = ttk.Entry(analysis_frame)
+        self.symbols_to_analyze_entry.insert(0, str(self.bot.config.get("analysis", {}).get("symbols_to_analyze", 30)))
+        self.symbols_to_analyze_entry.grid(row=3, column=1, sticky="w", padx=5, pady=5)
+        
+        ttk.Label(analysis_frame, text="Symbol Refresh Interval (s):").grid(row=4, column=0, sticky="w", padx=5, pady=5)
+        self.symbol_refresh_entry = ttk.Entry(analysis_frame)
+        self.symbol_refresh_entry.insert(0, str(self.bot.config.get("analysis", {}).get("symbol_refresh_interval", 600)))
+        self.symbol_refresh_entry.grid(row=4, column=1, sticky="w", padx=5, pady=5)
+        
+        ttk.Label(analysis_frame, text="Analysis Interval (s):").grid(row=5, column=0, sticky="w", padx=5, pady=5)
+        self.analysis_interval_entry = ttk.Entry(analysis_frame)
+        self.analysis_interval_entry.insert(0, str(self.bot.config.get("analysis", {}).get("analysis_interval", 60)))
+        self.analysis_interval_entry.grid(row=5, column=1, sticky="w", padx=5, pady=5)
+        
+        ttk.Label(analysis_frame, text="Repeat Analysis Interval (s):").grid(row=6, column=0, sticky="w", padx=5, pady=5)
+        self.repeat_analysis_entry = ttk.Entry(analysis_frame)
+        self.repeat_analysis_entry.insert(0, str(self.bot.config.get("analysis", {}).get("repeat_analysis_interval", 600)))
+        self.repeat_analysis_entry.grid(row=6, column=1, sticky="w", padx=5, pady=5)
         
         # Strategy settings
         strategy_frame = ttk.Frame(settings_notebook)
@@ -1153,7 +1187,6 @@ class TradingBotGUI:
             self.bot.config["account"]["server"] = self.server_entry.get()
             
             # Trading settings
-            self.bot.config["trading"]["symbols"] = [s.strip() for s in self.symbols_entry.get().split(',')]
             self.bot.config["trading"]["timeframes"] = [tf.strip() for tf in self.timeframes_entry.get().split(',')]
             self.bot.config["trading"]["risk_percent"] = float(self.risk_entry.get())
             self.bot.config["trading"]["max_risk_percent"] = float(self.max_risk_entry.get())
@@ -1185,6 +1218,18 @@ class TradingBotGUI:
             self.bot.config["strategy"]["indicators"]["support_resistance"]["enabled"] = self.use_sr.get()
             self.bot.config["strategy"]["indicators"]["support_resistance"]["lookback"] = int(self.sr_lookback_entry.get())
             self.bot.config["strategy"]["indicators"]["support_resistance"]["threshold"] = int(self.sr_threshold_entry.get())
+            
+            # Analysis settings
+            if "analysis" not in self.bot.config:
+                self.bot.config["analysis"] = {}
+            
+            self.bot.config["analysis"]["min_signal_strength"] = float(self.min_signal_strength_entry.get())
+            self.bot.config["analysis"]["max_warnings"] = int(self.max_warnings_entry.get())
+            self.bot.config["analysis"]["signal_expiry_minutes"] = int(self.signal_expiry_entry.get())
+            self.bot.config["analysis"]["symbols_to_analyze"] = int(self.symbols_to_analyze_entry.get())
+            self.bot.config["analysis"]["symbol_refresh_interval"] = int(self.symbol_refresh_entry.get())
+            self.bot.config["analysis"]["analysis_interval"] = int(self.analysis_interval_entry.get())
+            self.bot.config["analysis"]["repeat_analysis_interval"] = int(self.repeat_analysis_entry.get())
             
             # Save to file
             success = self.bot.save_config()
