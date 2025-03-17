@@ -69,13 +69,6 @@ class TradingBotGUI:
         # Default symbols until we get the actual list from the broker
         available_symbols = self.bot.config["trading"]["symbols"]
         self.selected_symbol = tk.StringVar(value=available_symbols[0] if available_symbols else "EURUSD")
-        
-        # Rest of the init code...
-        
-        # Add symbol refresh button
-        refresh_button = ttk.Button(controls_frame, text="↻", width=3, command=self.refresh_symbols)
-        refresh_button.grid(row=0, column=7, padx=5, pady=5)
-
     
     def create_menu(self):
         """Create the application menu"""
@@ -317,6 +310,10 @@ class TradingBotGUI:
         self.bars_combo.current(1)  # Default to 200 bars
         
         ttk.Button(controls_frame, text="Load Chart", command=self.load_chart).grid(row=0, column=6, padx=5, pady=5)
+
+        # Add symbol refresh button
+        refresh_button = ttk.Button(controls_frame, text="↻", width=3, command=self.refresh_symbols)
+        refresh_button.grid(row=0, column=7, padx=5, pady=5)
         
         # Chart frame
         self.chart_frame = ttk.Frame(self.charts_frame)
