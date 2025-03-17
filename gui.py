@@ -828,67 +828,110 @@ class TradingBotGUI:
             self.refresh_positions()
     
     def analyze_symbol(self):
-        """Analyze selected symbol"""
+        """Analyze selected symbol with correct timeframe handling"""
         if not self.account_connected.get():
             messagebox.showwarning("Warning", "Not connected to MetaTrader 5")
             return
-            
-        symbol = self.selected_symbol.get()
-        timeframe = self.selected_timeframe.get()
+                
+        symbol = self.symbol_combo.get()
+        timeframe = self.timeframe_combo.get()
         
+        # Clear previous analysis
         self.analysis_text.delete(1.0, tk.END)
         self.analysis_text.insert(tk.END, f"Analyzing {symbol} on {timeframe} timeframe...\n\n")
+        self.root.update_idletasks()  # Force UI update
         
-        signals = self.bot.analyze_symbol(symbol)
-        
-        if not signals:
-            self.analysis_text.insert(tk.END, "No tradable signals found.")
-            return
-        
-        # Find signal for our timeframe if it exists
-        tf_signal = None
-        for signal in signals:
-            if signal["timeframe"] == timeframe:
-                tf_signal = signal
-                break
-        
-        # Display the analysis
-        if tf_signal:
-            self.analysis_text.insert(tk.END, f"Signal: {tf_signal['action'].upper()}\n")
-            self.analysis_text.insert(tk.END, f"Strength: {tf_signal['strength']}/10\n")
-            self.analysis_text.insert(tk.END, f"Patterns: {', '.join(tf_signal['patterns'])}\n\n")
-            
-            self.analysis_text.insert(tk.END, f"Entry price: {tf_signal['entry']:.5f}\n")
-            self.analysis_text.insert(tk.END, f"Stop loss: {tf_signal['stop_loss']:.5f}\n")
-            self.analysis_text.insert(tk.END, f"Take profit: {tf_signal['take_profit']:.5f}\n")
-            self.analysis_text.insert(tk.END, f"Position size: {tf_signal['lot_size']:.2f} lots\n\n")
-            
-            # Calculate risk metrics
-            if tf_signal["entry"] and tf_signal["stop_loss"]:
-                risk_pips = abs(tf_signal["entry"] - tf_signal["stop_loss"]) * 10000
-                reward_pips = abs(tf_signal["entry"] - tf_signal["take_profit"]) * 10000
-                rr_ratio = reward_pips / risk_pips if risk_pips > 0 else 0
+        try:
+            # Analyze this specific symbol only
+            df = self.bot.get_market_data(symbol, timeframe)
+            if df is None or len(df) == 0:
+                self.analysis_text.insert(tk.END, "No data available for this symbol/timeframe.")
+                return
                 
-                self.analysis_text.insert(tk.END, f"Risk: {risk_pips:.1f} pips\n")
-                self.analysis_text.insert(tk.END, f"Reward: {reward_pips:.1f} pips\n")
-                self.analysis_text.insert(tk.END, f"Risk/Reward ratio: 1:{rr_ratio:.2f}\n")
+            # Calculate indicators
+            df = self.bot.calculate_indicators(df)
+            if df is None:
+                self.analysis_text.insert(tk.END, "Error calculating indicators.")
+                return
             
-            # Pre-fill the manual trading fields
-            self.action_combo.set(tf_signal['action'].capitalize())
-            self.lot_entry.delete(0, tk.END)
-            self.lot_entry.insert(0, f"{tf_signal['lot_size']:.2f}")
-            self.sl_entry.delete(0, tk.END)
-            self.sl_entry.insert(0, f"{tf_signal['stop_loss']:.5f}")
-            self.tp_entry.delete(0, tk.END)
-            self.tp_entry.insert(0, f"{tf_signal['take_profit']:.5f}")
-        else:
-            # Just show the strongest signal
-            strongest = signals[0]
-            self.analysis_text.insert(tk.END, f"No signal for {timeframe} timeframe.\n")
-            self.analysis_text.insert(tk.END, f"Strongest signal ({strongest['timeframe']}):\n\n")
-            self.analysis_text.insert(tk.END, f"Action: {strongest['action'].upper()}\n")
-            self.analysis_text.insert(tk.END, f"Strength: {strongest['strength']}/10\n")
-            self.analysis_text.insert(tk.END, f"Patterns: {', '.join(strongest['patterns'])}\n")
+            # Analyze price action
+            pa_signals, levels = self.bot.analyze_price_action(df)
+            if pa_signals is None:
+                self.analysis_text.insert(tk.END, "No analyzable patterns found.")
+                return
+            
+            # Display results
+            if pa_signals["buy"] or pa_signals["sell"]:
+                action = "BUY" if pa_signals["buy"] else "SELL"
+                self.analysis_text.insert(tk.END, f"Signal: {action}\n")
+                self.analysis_text.insert(tk.END, f"Strength: {pa_signals['strength']}/10\n")
+                
+                patterns = pa_signals.get("patterns", [])
+                if patterns:
+                    self.analysis_text.insert(tk.END, f"Patterns: {', '.join(patterns)}\n")
+                    
+                confirmations = pa_signals.get("confirmations", [])
+                if confirmations:
+                    self.analysis_text.insert(tk.END, f"Confirmations: {', '.join(confirmations)}\n")
+                
+                warnings = pa_signals.get("warnings", [])
+                if warnings:
+                    self.analysis_text.insert(tk.END, f"Warnings: {', '.join(warnings)}\n")
+                
+                self.analysis_text.insert(tk.END, "\nTrade parameters:\n")
+                if levels['entry']:
+                    self.analysis_text.insert(tk.END, f"Entry price: {levels['entry']:.5f}\n")
+                if levels['stop_loss']:
+                    self.analysis_text.insert(tk.END, f"Stop loss: {levels['stop_loss']:.5f}\n")
+                if levels['take_profit']:
+                    self.analysis_text.insert(tk.END, f"Take profit: {levels['take_profit']:.5f}\n")
+                    
+                # Calculate risk metrics
+                if levels["entry"] and levels["stop_loss"]:
+                    # Calculate lot size
+                    lot_size = self.bot.calculate_position_size(symbol, levels["entry"], levels["stop_loss"])
+                    
+                    risk_pips = abs(levels["entry"] - levels["stop_loss"]) * 10000
+                    reward_pips = abs(levels["entry"] - levels["take_profit"]) * 10000
+                    rr_ratio = reward_pips / risk_pips if risk_pips > 0 else 0
+                    
+                    self.analysis_text.insert(tk.END, f"Position size: {lot_size:.2f} lots\n")
+                    self.analysis_text.insert(tk.END, f"Risk: {risk_pips:.1f} pips\n")
+                    self.analysis_text.insert(tk.END, f"Reward: {reward_pips:.1f} pips\n")
+                    self.analysis_text.insert(tk.END, f"Risk/Reward ratio: 1:{rr_ratio:.2f}\n")
+                    
+                    # Pre-fill the manual trading fields
+                    self.action_combo.set("Buy" if pa_signals['buy'] else "Sell")
+                    self.lot_entry.delete(0, tk.END)
+                    self.lot_entry.insert(0, f"{lot_size:.2f}")
+                    self.sl_entry.delete(0, tk.END)
+                    self.sl_entry.insert(0, f"{levels['stop_loss']:.5f}")
+                    self.tp_entry.delete(0, tk.END)
+                    self.tp_entry.insert(0, f"{levels['take_profit']:.5f}")
+            else:
+                self.analysis_text.insert(tk.END, "No tradable signals found at this time.\n")
+                self.analysis_text.insert(tk.END, "\nCurrent market conditions:\n")
+                
+                # Show price relative to key MAs
+                last_row = df.iloc[-1]
+                
+                if 'ma50' in last_row and 'ma200' in last_row:
+                    price_ma50 = "above" if last_row['close'] > last_row['ma50'] else "below"
+                    price_ma200 = "above" if last_row['close'] > last_row['ma200'] else "below"
+                    ma_trend = "bullish" if last_row['ma50'] > last_row['ma200'] else "bearish"
+                    
+                    self.analysis_text.insert(tk.END, f"Price is {price_ma50} 50 MA and {price_ma200} 200 MA\n")
+                    self.analysis_text.insert(tk.END, f"MA trend is {ma_trend} (50 vs 200)\n")
+                
+                if 'rsi' in last_row:
+                    rsi_val = last_row['rsi']
+                    rsi_state = "oversold" if rsi_val < 30 else "overbought" if rsi_val > 70 else "neutral"
+                    self.analysis_text.insert(tk.END, f"RSI: {rsi_val:.1f} ({rsi_state})\n")
+        except Exception as e:
+            logger.error(f"Error analyzing symbol: {str(e)}")
+            import traceback
+            logger.error(traceback.format_exc())
+            self.analysis_text.insert(tk.END, f"Error during analysis: {str(e)}")
     
     def execute_manual_trade(self):
         """Execute a manual trade based on user input"""
@@ -920,7 +963,7 @@ class TradingBotGUI:
             messagebox.showerror("Error", "Invalid input. Please check lot size, SL, and TP values")
     
     def load_chart(self):
-        """Load and display a chart with fixed plotting approach"""
+        """Load and display a chart with fix for mplfinance"""
         if not self.account_connected.get():
             messagebox.showwarning("Warning", "Not connected to MetaTrader 5")
             return
@@ -934,9 +977,9 @@ class TradingBotGUI:
             widget.destroy()
         
         # Show loading message
-        loading_label = ttk.Label(self.chart_frame, text="Loading chart data...")
+        loading_label = ttk.Label(self.chart_frame, text=f"Loading chart data for {symbol}...")
         loading_label.pack(pady=50)
-        self.chart_frame.update()
+        self.chart_frame.update_idletasks()  # Force update to show loading message
         
         try:
             # Get market data
@@ -954,91 +997,84 @@ class TradingBotGUI:
             # Set datetime as index
             df.set_index("time", inplace=True)
             
-            # Style for the chart based on theme
-            if self.theme.get() == "dark":
-                plt.style.use("dark_background")
-                candle_up = "#26a69a"
-                candle_down = "#ef5350"
-            else:
-                plt.style.use("default")
-                candle_up = "#26a69a"
-                candle_down = "#ef5350"
-            
-            # Create candlestick chart
-            mpf_style = mpf.make_mpf_style(
-                base_mpf_style="yahoo" if self.theme.get() == "light" else "charles",
-                gridstyle=":",
-                gridaxis="both",
-                y_on_right=False,
-                facecolor="white" if self.theme.get() == "light" else "#121212",
-                edgecolor="black" if self.theme.get() == "light" else "#333333",
-                figcolor="white" if self.theme.get() == "light" else "#121212",
-                gridcolor="lightgrey" if self.theme.get() == "light" else "#333333",
-                rc={'axes.labelcolor': 'black' if self.theme.get() == "light" else "white"}
-            )
+            # Create figure with proper size first
+            plt.close('all')  # Close any existing figures to avoid conflicts
             
             # Remove loading message
             for widget in self.chart_frame.winfo_children():
                 widget.destroy()
+                
+            # Create figure and axes directly
+            if 'rsi' in df.columns:
+                fig = plt.figure(figsize=(12, 8))
+                # Create a 2x1 grid with specific height ratios
+                gs = fig.add_gridspec(2, 1, height_ratios=[3, 1], hspace=0.1)
+                
+                # Create the price and RSI axes
+                ax_price = fig.add_subplot(gs[0])
+                ax_rsi = fig.add_subplot(gs[1], sharex=ax_price)
+                
+                # Title for the figure
+                fig.suptitle(f"{symbol} - {timeframe}", y=0.98, fontsize=14)
+                
+                # Use mplfinance to plot candlesticks on price axis
+                mpf.plot(
+                    df, type='candle',
+                    ax=ax_price, volume=False,
+                    style='yahoo' if self.theme.get() == "light" else "charles"
+                )
+                
+                # Plot RSI on separate axis
+                ax_rsi.plot(df.index, df['rsi'], color='blue', linewidth=1)
+                ax_rsi.axhline(30, color='green', linestyle='--', alpha=0.5)
+                ax_rsi.axhline(70, color='red', linestyle='--', alpha=0.5)
+                ax_rsi.fill_between(df.index, df['rsi'], 30, where=(df['rsi'] < 30), color='green', alpha=0.3)
+                ax_rsi.fill_between(df.index, df['rsi'], 70, where=(df['rsi'] > 70), color='red', alpha=0.3)
+                ax_rsi.set_ylabel('RSI')
+                ax_rsi.grid(True, alpha=0.2)
+                ax_rsi.set_ylim(0, 100)
+            else:
+                # Create a single plot with price and volume
+                fig = plt.figure(figsize=(12, 8))
+                
+                # Create a 2x1 grid with specific height ratios for price and volume
+                gs = fig.add_gridspec(2, 1, height_ratios=[4, 1], hspace=0.1)
+                
+                # Create the axes
+                ax_price = fig.add_subplot(gs[0])
+                ax_volume = fig.add_subplot(gs[1], sharex=ax_price)
+                
+                # Title for the figure
+                fig.suptitle(f"{symbol} - {timeframe}", y=0.98, fontsize=14)
+                
+                # Plot candlesticks
+                mpf.plot(
+                    df, type='candle',
+                    ax=ax_price, volume=False,
+                    style='yahoo' if self.theme.get() == "light" else "charles"
+                )
+                
+                # Plot volume
+                ax_volume.bar(df.index, df['tick_volume'], color='blue', alpha=0.5, width=0.0005)
+                ax_volume.set_ylabel('Volume')
             
-            # Create subplots
-            try:
-                if 'rsi' in df.columns:
-                    # Setup figure with subplots
-                    fig = plt.figure(figsize=(12, 8))
-                    gs = fig.add_gridspec(2, 1, height_ratios=[3, 1], hspace=0.1)
-                    ax1 = fig.add_subplot(gs[0])
-                    ax2 = fig.add_subplot(gs[1], sharex=ax1)
-                    
-                    # Plot candlesticks on the main axis
-                    mpf.plot(
-                        df, type='candle', style=mpf_style,
-                        ax=ax1, volume=False,  # Don't include volume in the main plot
-                        title=f"{symbol} - {timeframe}"
-                    )
-                    
-                    # Plot RSI on the secondary panel
-                    ax1.set_ylabel('Price')
-                    ax2.plot(df.index, df['rsi'], color='blue', linewidth=0.8)
-                    ax2.axhline(y=30, color='green', linestyle='-', alpha=0.3)
-                    ax2.axhline(y=70, color='red', linestyle='-', alpha=0.3)
-                    ax2.fill_between(df.index, df['rsi'], 30, where=(df['rsi'] < 30), color='green', alpha=0.3)
-                    ax2.fill_between(df.index, df['rsi'], 70, where=(df['rsi'] > 70), color='red', alpha=0.3)
-                    ax2.set_ylabel('RSI')
-                    ax2.grid(True, alpha=0.3)
-                    
-                else:
-                    # Create a single figure for price and volume
-                    fig = plt.figure(figsize=(12, 8))
-                    ax1 = fig.add_subplot(1, 1, 1)
-                    
-                    # Plot candlesticks
-                    mpf.plot(
-                        df, type='candle', style=mpf_style,
-                        title=f"{symbol} - {timeframe}",
-                        ax=ax1, volume=True  # Include volume
-                    )
-                    ax1.set_ylabel('Price')
-                
-                # Finalize the figure
-                fig.tight_layout()
-                
-                # Create Tkinter canvas
-                canvas = FigureCanvasTkAgg(fig, master=self.chart_frame)
-                canvas.draw()
-                canvas.get_tk_widget().pack(fill="both", expand=True)
-                
-            except Exception as e:
-                logger.error(f"Chart plotting error: {e}")
-                import traceback
-                logger.error(traceback.format_exc())
-                ttk.Label(self.chart_frame, text=f"Error plotting chart: {str(e)}").pack(pady=50)
-                
+            # Adjust layout and create canvas
+            plt.tight_layout()
+            plt.subplots_adjust(top=0.95)  # Make room for the title
+            
+            canvas = FigureCanvasTkAgg(fig, master=self.chart_frame)
+            canvas.draw()
+            canvas.get_tk_widget().pack(fill="both", expand=True)
+            
         except Exception as e:
-            logger.error(f"Error loading chart: {e}")
+            logger.error(f"Error loading chart: {str(e)}")
+            import traceback
+            logger.error(traceback.format_exc())
+            
+            # Clear frame and show error
             for widget in self.chart_frame.winfo_children():
                 widget.destroy()
-            ttk.Label(self.chart_frame, text=f"Error loading chart: {str(e)}").pack(pady=50)
+            ttk.Label(self.chart_frame, text=f"Error loading chart:\n{str(e)}").pack(pady=50)
     
     def clear_logs(self):
         """Clear log display"""

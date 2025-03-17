@@ -155,13 +155,14 @@ class TradingBot:
     def get_market_data(self, symbol, timeframe, bars=500):
         """Get market data from MT5 with improved symbol handling"""
         try:
-            # Check if this symbol has consistently failed
-            if symbol in self.failed_symbols and self.failed_symbols[symbol]['count'] > 5:
-                # Skip if we've had too many failures
-                if self.failed_symbols[symbol]['count'] % 10 == 0:  # Log occasionally to reduce spam
-                    logger.warning(f"Skipping {symbol} {timeframe} - failed {self.failed_symbols[symbol]['count']} consecutive times")
-                self.failed_symbols[symbol]['count'] += 1
-                return None
+            # Check if symbol exists - if it's one of our index names, use the actual broker symbol
+            actual_symbol = symbol
+            
+            # If symbol is one of our generic index names, use the first mapped symbol if available
+            if symbol in self.symbol_mapping and self.symbol_mapping[symbol]:
+                actual_symbol = self.symbol_mapping[symbol][0]
+                if actual_symbol != symbol:
+                    logger.debug(f"Using {actual_symbol} for {symbol}")
             
             # Convert string timeframe to MT5 timeframe constant
             tf_map = {
@@ -173,26 +174,19 @@ class TradingBot:
             
             tf = tf_map.get(timeframe, mt5.TIMEFRAME_H1)
             
-            # Get effective symbol name - try to use our cached "working name" if available
-            effective_symbol = symbol
+            # Try to get the market data directly
+            rates = mt5.copy_rates_from_pos(actual_symbol, tf, 0, bars)
             
-            # Try with the symbol name
-            rates = mt5.copy_rates_from_pos(effective_symbol, tf, 0, bars)
-            
-            # If failed and it's one of our mapped indices/symbols, try alternatives
+            # If still failed, try alternative only if we haven't already
             if (rates is None or len(rates) == 0) and symbol in self.symbol_mapping:
-                for alt_symbol in self.symbol_mapping[symbol]:
-                    if alt_symbol == symbol:
-                        continue  # Skip the one we already tried
-                    
-                    logger.info(f"Trying alternative symbol name: {alt_symbol} for {symbol}")
+                for alt_symbol in self.symbol_mapping[symbol][1:]:  # Skip the first one we already tried
+                    logger.debug(f"Trying alternative symbol: {alt_symbol}")
                     rates = mt5.copy_rates_from_pos(alt_symbol, tf, 0, bars)
-                    
                     if rates is not None and len(rates) > 0:
-                        logger.info(f"Successfully retrieved data using alternate name: {alt_symbol}")
-                        # Update mapping to prioritize working name
+                        # Update mapping to prioritize this symbol
                         self.symbol_mapping[symbol].remove(alt_symbol)
                         self.symbol_mapping[symbol].insert(0, alt_symbol)
+                        actual_symbol = alt_symbol
                         break
             
             # Track failures
@@ -386,7 +380,7 @@ class TradingBot:
             return df
         
     def get_available_symbols(self):
-        """Get available symbols from the broker"""
+        """Get available symbols from the broker with spread information"""
         if not self.connected:
             if not self.connect():
                 return []
@@ -398,21 +392,62 @@ class TradingBot:
                 logger.error("Failed to get symbols")
                 return []
             
-            # Filter for interesting symbols (forex, indices, metals)
-            interesting_symbols = []
+            # Filter and sort symbols by spread for better trading opportunities
+            tradable_symbols = []
             for symbol in symbols:
                 symbol_name = symbol.name
-                # Include forex majors, metals, and major indices
+                symbol_info = mt5.symbol_info(symbol_name)
+                
+                # Include forex majors, metals, and major indices with spread info
                 if (any(pair in symbol_name for pair in ["USD", "EUR", "GBP", "JPY", "AUD", "NZD", "CAD", "CHF"]) or
                     any(pair in symbol_name for pair in ["SPX", "SP500", "US30", "NASDAQ", "NDX", "NAS100", "DJ", "DAX", "FTSE"]) or
                     any(metal in symbol_name for metal in ["GOLD", "SILVER", "XAU", "XAG"])):
-                    interesting_symbols.append(symbol_name)
+                    
+                    spread = symbol_info.spread if symbol_info else 999
+                    # Check if symbol is tradable using visible and trade_mode properties
+                    is_tradable = False
+                    if symbol_info:
+                        is_tradable = symbol_info.visible and symbol_info.trade_mode != mt5.SYMBOL_TRADE_MODE_DISABLED
+                    
+                    tradable_symbols.append({
+                        'name': symbol_name,
+                        'spread': spread,
+                        'digits': symbol_info.digits if symbol_info else 5,
+                        'trade_allowed': is_tradable
+                    })
             
-            logger.info(f"Found {len(interesting_symbols)} tradable symbols")
-            return sorted(interesting_symbols)
+            # Sort by spread (lowest first) and filter to tradable only
+            tradable_symbols = [s for s in tradable_symbols if s['trade_allowed']]
+            tradable_symbols.sort(key=lambda x: x['spread'])
+            
+            # Extract just the names for compatibility with existing code
+            symbol_names = [s['name'] for s in tradable_symbols]
+            
+            # Update the symbol mapping with exact symbols from the broker
+            self._update_index_mapping(symbol_names)
+            
+            logger.info(f"Found {len(symbol_names)} tradable symbols, sorted by spread")
+            return symbol_names[:100]  # Return top 100 symbols by spread
         except Exception as e:
             logger.error(f"Error getting symbols: {e}")
             return []
+
+    def _update_index_mapping(self, available_symbols):
+        """Update index symbol mapping based on what's actually available at the broker"""
+        # Clear previous mappings and use exact broker symbols
+        us30_variants = [s for s in available_symbols if any(x in s.upper() for x in ["US30", "DOW", "DJ30"])]
+        nasdaq_variants = [s for s in available_symbols if any(x in s.upper() for x in ["NASDAQ", "NAS100", "NDX"])]
+        sp500_variants = [s for s in available_symbols if any(x in s.upper() for x in ["SPX", "SP500", "US500"])]
+        
+        # Store the most common names as keys for convenience
+        if us30_variants:
+            self.symbol_mapping["US30"] = us30_variants
+        if nasdaq_variants:
+            self.symbol_mapping["NASDAQ"] = nasdaq_variants
+        if sp500_variants:
+            self.symbol_mapping["SPX500"] = sp500_variants
+        
+        logger.info("Updated index symbol mappings with broker-specific symbols")
 
     def update_symbol_mapping(self):
         """Update the symbol mapping based on broker's available symbols"""
