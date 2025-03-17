@@ -724,18 +724,24 @@ class TradingBot:
 
             # --- FINAL SIGNAL ADJUSTMENT ---
 
-            # Track separate strength values for buy and sell signals
-            buy_strength = signals['strength'] if signals['buy'] else 0
-            sell_strength = signals['strength'] if signals['sell'] else 0
-
             # Avoid conflicting signals by taking the stronger one
             if signals['buy'] and signals['sell']:
-                if buy_strength > sell_strength:
+                # Calculate strength for each direction based on patterns and confirmations
+                buy_patterns = len([p for p in signals['patterns'] if 'bullish' in p or 'buy' in p])
+                sell_patterns = len([p for p in signals['patterns'] if 'bearish' in p or 'sell' in p])
+                
+                buy_confirmations = len([c for c in signals.get('confirmations', []) if 'bullish' in c or 'buy' in c or 'support' in c])
+                sell_confirmations = len([c for c in signals.get('confirmations', []) if 'bearish' in c or 'sell' in c or 'resistance' in c])
+                
+                # Calculate total strength for each direction
+                buy_total = buy_patterns + buy_confirmations
+                sell_total = sell_patterns + sell_confirmations
+                
+                # Keep only the stronger signal
+                if buy_total > sell_total:
                     signals['sell'] = False
-                    signals['patterns'] = [p for p in signals['patterns'] if not p.startswith('bearish_') and not p.startswith('sell_')]
                 else:
                     signals['buy'] = False
-                    signals['patterns'] = [p for p in signals['patterns'] if not p.startswith('bullish_') and not p.startswith('buy_')]
 
             # Cap strength at 10
             signals['strength'] = min(10, max(0, signals['strength']))
@@ -1154,6 +1160,8 @@ class TradingBot:
                         "action": "buy" if pa_signals["buy"] else "sell",
                         "strength": pa_signals["strength"],
                         "patterns": pa_signals["patterns"],
+                        "confirmations": pa_signals.get("confirmations", []),  # Use get with default
+                        "warnings": pa_signals.get("warnings", []),  # Use get with default
                         "entry": levels["entry"],
                         "stop_loss": levels["stop_loss"],
                         "take_profit": levels["take_profit"],
@@ -1263,6 +1271,7 @@ class TradingBot:
             logger.error(traceback.format_exc())
             return market_condition
     
+    # Fix for the run_trading_cycle function - ensure all signal dictionaries have consistent keys
     def run_trading_cycle(self):
         """Enhanced trading cycle with improved signal filtering"""
         if not self.connected:
@@ -1292,6 +1301,12 @@ class TradingBot:
             if signals:
                 # Count signal directions
                 for signal in signals:
+                    # Ensure standard keys exist in all signal dictionaries
+                    if "confirmations" not in signal:
+                        signal["confirmations"] = []
+                    if "warnings" not in signal:
+                        signal["warnings"] = []
+                        
                     if signal["action"] == "buy":
                         buy_signals += 1
                     else:
@@ -1332,7 +1347,7 @@ class TradingBot:
             # Only consider strong signals (strength >= 6)
             if signal["strength"] >= 6:
                 # Skip signals with too many warnings
-                if len(signal.get("warnings", [])) <= 2:
+                if len(signal.get("warnings", [])) <= 2:  # Use get with default empty list
                     filtered_signals.append(signal)
         
         # Log signal summary

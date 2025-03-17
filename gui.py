@@ -1140,6 +1140,40 @@ class TradingBotGUI:
                 self.bot.config["gui"] = {}
             self.bot.config["gui"]["theme"] = "light"
             self.bot.save_config()
+
+    def update_signals(self):
+        """Update signals display"""
+        if not self.account_connected.get():
+            return
+            
+        try:
+            # Clear existing signals
+            for item in self.signals_tree.get_children():
+                self.signals_tree.delete(item)
+                
+            # Get recent signals
+            signals = self.bot.run_trading_cycle()
+            if signals:
+                for signal in signals:
+                    try:
+                        # Use get() with defaults to handle missing keys
+                        self.signals_tree.insert(
+                            "", "end",
+                            values=(
+                                signal.get("timestamp", ""),
+                                signal.get("symbol", ""),
+                                signal.get("action", "").upper(),
+                                signal.get("timeframe", ""),
+                                f"{signal.get('strength', 0)}/10",
+                                f"{signal.get('entry', 0):.5f}",
+                                f"{signal.get('stop_loss', 0):.5f}",
+                                f"{signal.get('take_profit', 0):.5f}"
+                            )
+                        )
+                    except Exception as e:
+                        logger.error(f"Error adding signal to tree: {e}")
+        except Exception as e:
+            logger.error(f"Error updating signals: {e}")
     
     def update_gui_data(self):
         """Update GUI data in a separate thread"""
@@ -1158,33 +1192,6 @@ class TradingBotGUI:
                 self.update_time_label.config(text=f"Last Update: {datetime.now().strftime('%H:%M:%S')}")
             
             time.sleep(2)  # Update every 2 seconds
-    
-    def update_signals(self):
-        """Update signals display"""
-        if not self.account_connected.get():
-            return
-            
-        # Clear existing signals
-        for item in self.signals_tree.get_children():
-            self.signals_tree.delete(item)
-            
-        # Get recent signals
-        signals = self.bot.run_trading_cycle()
-        if signals:
-            for signal in signals:
-                self.signals_tree.insert(
-                    "", "end",
-                    values=(
-                        signal["timestamp"],
-                        signal["symbol"],
-                        signal["action"].upper(),
-                        signal["timeframe"],
-                        f"{signal['strength']}/10",
-                        f"{signal['entry']:.5f}",
-                        f"{signal['stop_loss']:.5f}",
-                        f"{signal['take_profit']:.5f}"
-                    )
-                )
     
     def on_closing(self):
         """Handle window closing"""
