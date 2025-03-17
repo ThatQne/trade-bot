@@ -605,26 +605,57 @@ class TradingBotGUI:
             return
             
         if not self.bot_running.get():
-            result = self.bot.start()
-            if result:
-                self.bot_running.set(True)
-                self.bot_status_label.config(text="Bot: Running", foreground="green")
-                self.bot_button.config(text="Stop Bot")
-                messagebox.showinfo("Bot Started", "Trading bot has been started")
-            else:
-                messagebox.showerror("Error", "Failed to start trading bot")
-    
+            # Use a thread to start the bot without freezing the UI
+            def start_bot_thread():
+                try:
+                    result = self.bot.start()
+                    if result:
+                        # Update UI from main thread
+                        self.root.after(0, lambda: self._update_bot_started())
+                    else:
+                        self.root.after(0, lambda: messagebox.showerror("Error", "Failed to start trading bot"))
+                except Exception as e:
+                    error_msg = f"Error starting bot: {str(e)}"
+                    logger.error(error_msg)
+                    self.root.after(0, lambda: messagebox.showerror("Error", error_msg))
+            
+            # Show a "Starting..." message
+            self.bot_status_label.config(text="Bot: Starting...", foreground="orange")
+            start_thread = threading.Thread(target=start_bot_thread, daemon=True)
+            start_thread.start()
+        
+    def _update_bot_started(self):
+        """Update UI after bot successfully starts"""
+        self.bot_running.set(True)
+        self.bot_status_label.config(text="Bot: Running", foreground="green")
+        self.bot_button.config(text="Stop Bot")
+        messagebox.showinfo("Bot Started", "Trading bot has been started")
+
     def stop_bot(self):
         """Stop the trading bot"""
         if self.bot_running.get():
-            result = self.bot.stop()
-            if result:
-                self.bot_running.set(False)
-                self.bot_status_label.config(text="Bot: Stopped", foreground="red")
-                self.bot_button.config(text="Start Bot")
-                messagebox.showinfo("Bot Stopped", "Trading bot has been stopped")
-            else:
-                messagebox.showerror("Error", "Failed to stop trading bot")
+            # Use a thread to stop the bot without freezing the UI
+            def stop_bot_thread():
+                try:
+                    result = self.bot.stop()
+                    if result:
+                        # Update UI from main thread
+                        self.root.after(0, lambda: self._update_bot_stopped())
+                    else:
+                        self.root.after(0, lambda: messagebox.showerror("Error", "Failed to stop trading bot"))
+                except Exception as e:
+                    self.root.after(0, lambda: messagebox.showerror("Error", f"Error stopping bot: {str(e)}"))
+            
+            # Show a "Stopping..." message
+            self.bot_status_label.config(text="Bot: Stopping...", foreground="orange")
+            threading.Thread(target=stop_bot_thread, daemon=True).start()
+
+    def _update_bot_stopped(self):
+        """Update UI after bot successfully stops"""
+        self.bot_running.set(False)
+        self.bot_status_label.config(text="Bot: Stopped", foreground="red")
+        self.bot_button.config(text="Start Bot")
+        messagebox.showinfo("Bot Stopped", "Trading bot has been stopped")
     
     def toggle_bot(self):
         """Toggle bot running state"""
