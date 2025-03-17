@@ -6,7 +6,6 @@
         "path": "C:\\Program Files\\MetaTrader 5\\terminal64.exe"
     },
     "trading": {
-        "symbols": ["EURUSD", "GBPUSD", "USDJPY", "XAUUSD", "US30", "NASDAQ", "SPX500"],
         "timeframes": ["M5", "M15", "H1"],
         "risk_percent": 2.0,
         "max_risk_percent": 20.0,
@@ -46,6 +45,15 @@
                 "threshold": 5
             }
         }
+    },
+    "analysis": {
+        "min_signal_strength": 4.0,
+        "max_warnings": 3,
+        "signal_expiry_minutes": 5,
+        "symbols_to_analyze": 30,
+        "symbol_refresh_interval": 600,
+        "analysis_interval": 60,
+        "repeat_analysis_interval": 600
     },
     "gui": {
         "theme": "dark",

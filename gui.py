@@ -8,7 +8,7 @@ from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg
 import mplfinance as mpf
 import pandas as pd
 import numpy as np
-from datetime import datetime
+from datetime import datetime, timedelta  # Add timedelta import here
 import os
 import sys
 import logging
@@ -1294,6 +1294,9 @@ class TradingBotGUI:
             # Get current time for expiration check
             current_time = datetime.now()
             
+            # Get signal expiry time from config
+            signal_expiry_minutes = self.bot.config.get("analysis", {}).get("signal_expiry_minutes", 5)
+            
             # Store signals with timestamp if not already present
             if not hasattr(self, 'stored_signals'):
                 self.stored_signals = []
@@ -1301,8 +1304,8 @@ class TradingBotGUI:
             # Process new signals - add them to stored signals
             if current_signals:
                 for signal in current_signals:
-                    # Add expiry time to new signals (5 minutes from now)
-                    signal['expiry_time'] = current_time + timedelta(minutes=5)
+                    # Add expiry time to new signals (configurable minutes from now)
+                    signal['expiry_time'] = current_time + timedelta(minutes=signal_expiry_minutes)
                     
                     # Check if signal already exists (same symbol, timeframe, action)
                     existing_signal = next((s for s in self.stored_signals 
@@ -1318,9 +1321,12 @@ class TradingBotGUI:
                         self.stored_signals.append(signal)
                         logger.info(f"New signal added: {signal['symbol']} {signal['timeframe']} {signal['action']}")
             
-            # Remove expired signals or signals with strength < 4
+            # Get minimum strength threshold from config
+            min_strength = self.bot.config.get("analysis", {}).get("min_signal_strength", 4.0)
+            
+            # Remove expired signals or signals with strength below threshold
             self.stored_signals = [s for s in self.stored_signals 
-                                if s['expiry_time'] > current_time and s['strength'] >= 4]
+                                if s['expiry_time'] > current_time and s['strength'] >= min_strength]
             
             # Clear existing signals in treeview
             for item in self.signals_tree.get_children():
