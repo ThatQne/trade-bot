@@ -755,11 +755,15 @@ class TradingBotGUI:
         self.bot.save_config()
     
     def update_risk(self, *args):
-        """Update risk percentage setting and label"""
+        """Update risk percentage setting and label, directly affecting trading"""
         value = round(float(self.risk_percent.get()), 1)
         self.risk_value_label.config(text=f"{value}%")
-        self.bot.config["trading"]["risk_percent"] = value
-        self.bot.save_config()
+        
+        # Update the risk percent in the config
+        if "trading" in self.bot.config:
+            self.bot.config["trading"]["risk_percent"] = value
+            self.bot.save_config()
+            logger.info(f"Risk percentage updated to {value}%")
     
     def refresh_account_info(self):
         """Refresh account information"""

@@ -397,7 +397,7 @@ class TradingBot:
                     real_spread = tick.ask - tick.bid
                     # Convert to pips
                     spread_in_pips = real_spread / pip_size * 10
-                    # Calculate percentage spread
+                    # Calculate percentage spread for better comparison across instruments
                     spread_percentage = (real_spread / tick.bid) * 100 if tick.bid > 0 else 0
                 else:
                     # Fallback to symbol info spread
@@ -422,7 +422,7 @@ class TradingBot:
                 if is_visible:  # Using visibility as tradability
                     visible_symbols_data.append(symbol_data)
             
-            # Sort all symbols by spread percentage
+            # Sort all symbols by spread percentage for better comparison across instruments
             all_symbol_data.sort(key=lambda x: x['spread_percentage'])
             
             # Count visible (tradable) symbols
@@ -438,7 +438,7 @@ class TradingBot:
             # Store visible symbols list for auto-trading (treating visible as tradable)
             self.tradable_symbols = visible_names
             
-            # Log the top symbols
+            # Log the top symbols with comprehensive info
             for i, symbol in enumerate(all_symbol_data[:30]):
                 visibility_text = "visible/tradable" if symbol['is_visible'] else "hidden/non-tradable"
                 logger.info(f"Top {i+1}: {symbol['name']} - "
@@ -446,23 +446,30 @@ class TradingBot:
                         f"({symbol['spread_percentage']:.5f}%) - "
                         f"Type: {symbol['type']} - {visibility_text}")
             
-            # Prepare priority symbols for analysis
+            # Prepare priority symbols for analysis - crucial to include ALL tradable/visible symbols first
             symbols_to_analyze = self.config.get("analysis", {}).get("symbols_to_analyze", 30)
             
-            # Create priority list that includes ALL visible symbols plus other symbols up to the limit
-            priority_symbols = []
+            # Start with ALL visible/tradable symbols
+            priority_symbols = list(visible_names)
             
-            # First, add all visible/tradable symbols
-            priority_symbols.extend(visible_names)
-            
-            # Then add non-visible symbols until we reach the limit
+            # Then add additional non-visible symbols until we reach the limit
             remaining_slots = symbols_to_analyze - len(priority_symbols)
             if remaining_slots > 0:
-                # Get non-visible symbols that aren't already in the list
-                non_visible_symbols = [s['name'] for s in all_symbol_data 
-                                    if s['name'] not in priority_symbols]
-                # Add as many as we need
+                non_visible_symbols = [s['name'] for s in all_symbol_data if s['name'] not in priority_symbols]
                 priority_symbols.extend(non_visible_symbols[:remaining_slots])
+            
+            # If we need to trim down, make sure to keep ALL visible/tradable symbols first
+            if len(priority_symbols) > symbols_to_analyze:
+                # Only trim non-visible symbols if needed
+                visible_set = set(visible_names)
+                non_visible_priority = [s for s in priority_symbols if s not in visible_set]
+                
+                # Keep all visible plus enough non-visible symbols to reach the limit
+                remaining_slots = symbols_to_analyze - len(visible_names)
+                if remaining_slots > 0:
+                    priority_symbols = visible_names + non_visible_priority[:remaining_slots]
+                else:
+                    priority_symbols = visible_names[:symbols_to_analyze]  # In case we have too many visible symbols
             
             # Store the priority symbols
             self.analysis_priority_symbols = priority_symbols
@@ -1209,8 +1216,12 @@ class TradingBot:
             # Use the lower of equity or balance to be conservative with risk
             risk_capital = min(equity, balance)
             
-            # Get risk percentage from config
-            risk_percent = min(self.config["trading"]["risk_percent"], self.config["trading"]["max_risk_percent"])
+            # Get risk percentage from config - always use the latest setting
+            risk_percent = self.config["trading"]["risk_percent"]
+            max_risk_percent = self.config["trading"]["max_risk_percent"]
+            
+            # Cap the risk percentage at the maximum allowed
+            risk_percent = min(risk_percent, max_risk_percent)
             
             # Dynamic risk adjustment based on current drawdown
             if equity < balance:
@@ -1798,7 +1809,7 @@ class TradingBot:
         return filtered_signals
     
     def auto_trade(self, signals):
-        """Automatically execute trades based on signals - only for tradable symbols"""
+        """Automatically execute trades based on signals - only for visible/tradable symbols"""
         if not self.connected or not signals:
             return []
         
@@ -1807,16 +1818,16 @@ class TradingBot:
         open_positions_count = len(positions) if positions is not None else 0
         max_positions = self.config["trading"]["max_open_trades"]
         
-        # Make sure we have the list of tradable symbols
+        # Make sure we have the list of tradable symbols (visible symbols)
         if not hasattr(self, 'tradable_symbols'):
             self.get_available_symbols()
-            
-        # Filter signals to only tradable symbols
+                
+        # Filter signals to only tradable (visible) symbols
         tradable_signals = [signal for signal in signals 
                         if signal["symbol"] in getattr(self, 'tradable_symbols', [])]
         
         if len(tradable_signals) < len(signals):
-            logger.info(f"Filtered out {len(signals) - len(tradable_signals)} non-tradable symbols from auto-trading")
+            logger.info(f"Filtered out {len(signals) - len(tradable_signals)} non-visible symbols from auto-trading")
         
         if not tradable_signals:
             logger.info("No tradable signals available for auto-trading")
@@ -1831,6 +1842,17 @@ class TradingBot:
             # Take the strongest signals first, limited by available slots
             for signal in tradable_signals[:available_slots]:
                 try:
+                    # Apply risk percentage from config
+                    # This ensures the risk setting is properly used for every trade
+                    lot_size = self.calculate_position_size(
+                        signal["symbol"],
+                        signal["entry"],
+                        signal["stop_loss"]
+                    )
+                    
+                    # Update lot size in the signal
+                    signal["lot_size"] = lot_size
+                    
                     # Execute the trade
                     result = self.execute_trade(
                         signal["symbol"],

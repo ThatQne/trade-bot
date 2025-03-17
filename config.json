@@ -6,11 +6,11 @@
         "path": "C:\\Program Files\\MetaTrader 5\\terminal64.exe"
     },
     "trading": {
-        "timeframes": ["M5", "M15", "H1"],
-        "risk_percent": 2.0,
-        "max_risk_percent": 20.0,
-        "min_risk_reward": 2.0,
-        "max_open_trades": 5,
+        "timeframes": ["M5", "M15", "H1", "H4", "D1"],
+        "risk_percent": 20.0,
+        "max_risk_percent": 80.0,
+        "min_risk_reward": 1.5,
+        "max_open_trades": 10,
         "use_trailing_stop": true,
         "trailing_stop_activation": 1.0,
         "trailing_stop_distance": 0.5
@@ -51,9 +51,9 @@
         "max_warnings": 3,
         "signal_expiry_minutes": 5,
         "symbols_to_analyze": 30,
-        "symbol_refresh_interval": 600,
-        "analysis_interval": 60,
-        "repeat_analysis_interval": 600
+        "symbol_refresh_interval": 15,
+        "analysis_interval": 15,
+        "repeat_analysis_interval": 15
     },
     "gui": {
         "theme": "dark",
