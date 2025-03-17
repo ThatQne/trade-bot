@@ -1,0 +1,56 @@
+{
+    "account": {
+        "login": 969142,
+        "password": "Hw0@8R5qh7vEDY",
+        "server": "Coinexx-Live",
+        "path": "C:\\Program Files\\MetaTrader 5\\terminal64.exe"
+    },
+    "trading": {
+        "symbols": ["EURUSD", "GBPUSD", "USDJPY", "XAUUSD", "US30", "NASDAQ", "SPX500"],
+        "timeframes": ["M5", "M15", "H1"],
+        "risk_percent": 2.0,
+        "max_risk_percent": 20.0,
+        "min_risk_reward": 2.0,
+        "max_open_trades": 5,
+        "use_trailing_stop": true,
+        "trailing_stop_activation": 1.0,
+        "trailing_stop_distance": 0.5
+    },
+    "strategy": {
+        "price_action": {
+            "enabled": true,
+            "min_candle_size": 0.0010,
+            "rejection_level": 0.3,
+            "confirmation_candles": 2
+        },
+        "volume": {
+            "enabled": true,
+            "threshold": 1.5
+        },
+        "indicators": {
+            "rsi": {
+                "enabled": true,
+                "period": 14,
+                "overbought": 70,
+                "oversold": 30
+            },
+            "macd": {
+                "enabled": true,
+                "fast": 12,
+                "slow": 26,
+                "signal": 9
+            },
+            "support_resistance": {
+                "enabled": true,
+                "lookback": 100,
+                "threshold": 5
+            }
+        }
+    },
+    "gui": {
+        "theme": "dark",
+        "update_interval": 1.0,
+        "chart_periods": ["1H", "4H", "1D"]
+    },
+    "auto_trading": true
+}
