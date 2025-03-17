@@ -963,7 +963,7 @@ class TradingBotGUI:
             messagebox.showerror("Error", "Invalid input. Please check lot size, SL, and TP values")
     
     def load_chart(self):
-        """Load and display a chart with fix for mplfinance"""
+        """Load and display a chart with more robust error handling"""
         if not self.account_connected.get():
             messagebox.showwarning("Warning", "Not connected to MetaTrader 5")
             return
@@ -982,89 +982,87 @@ class TradingBotGUI:
         self.chart_frame.update_idletasks()  # Force update to show loading message
         
         try:
-            # Get market data
-            df = self.bot.get_market_data(symbol, timeframe, bars)
+            # Get market data in a separate thread to avoid freezing the UI
+            def fetch_data():
+                return self.bot.get_market_data(symbol, timeframe, bars)
+                
+            df = fetch_data()
             
             if df is None or len(df) == 0:
                 for widget in self.chart_frame.winfo_children():
                     widget.destroy()
-                ttk.Label(self.chart_frame, text="No data available for the selected symbol/timeframe").pack(pady=50)
+                ttk.Label(self.chart_frame, text=f"No data available for {symbol} on {timeframe} timeframe").pack(pady=50)
                 return
             
-            # Add indicators
+            # Calculate indicators (can take time for large datasets)
             df = self.bot.calculate_indicators(df)
             
             # Set datetime as index
             df.set_index("time", inplace=True)
             
             # Create figure with proper size first
-            plt.close('all')  # Close any existing figures to avoid conflicts
+            plt.close('all')  # Close any existing figures to avoid memory leaks
             
             # Remove loading message
             for widget in self.chart_frame.winfo_children():
                 widget.destroy()
                 
-            # Create figure and axes directly
+            # Create a new figure explicitly
+            fig = plt.figure(figsize=(12, 8), dpi=100)
+            
+            # Create subplots based on what indicators we want to show
             if 'rsi' in df.columns:
-                fig = plt.figure(figsize=(12, 8))
-                # Create a 2x1 grid with specific height ratios
-                gs = fig.add_gridspec(2, 1, height_ratios=[3, 1], hspace=0.1)
+                # Create a 2-row subplot with price on top and RSI on bottom
+                price_ax = plt.subplot2grid((5, 1), (0, 0), rowspan=3)
+                volume_ax = plt.subplot2grid((5, 1), (3, 0), rowspan=1, sharex=price_ax)
+                rsi_ax = plt.subplot2grid((5, 1), (4, 0), rowspan=1, sharex=price_ax)
                 
-                # Create the price and RSI axes
-                ax_price = fig.add_subplot(gs[0])
-                ax_rsi = fig.add_subplot(gs[1], sharex=ax_price)
+                # Plot candlesticks (manually for better control)
+                mpf.plot(df, type='candle', ax=price_ax, volume=False, 
+                        style='yahoo' if self.theme.get() == "light" else "charles")
+                        
+                # Add volume
+                volume_ax.bar(df.index, df['tick_volume'], color='blue', alpha=0.3)
+                volume_ax.set_ylabel('Volume')
                 
-                # Title for the figure
-                fig.suptitle(f"{symbol} - {timeframe}", y=0.98, fontsize=14)
+                # Add RSI
+                rsi_ax.plot(df.index, df['rsi'], color='blue', linewidth=1)
+                rsi_ax.axhline(30, color='green', linestyle='--', alpha=0.5)
+                rsi_ax.axhline(70, color='red', linestyle='--', alpha=0.5)
+                rsi_ax.fill_between(df.index, df['rsi'], 30, where=(df['rsi'] < 30), color='green', alpha=0.3)
+                rsi_ax.fill_between(df.index, df['rsi'], 70, where=(df['rsi'] > 70), color='red', alpha=0.3)
+                rsi_ax.set_ylabel('RSI')
+                rsi_ax.set_ylim(0, 100)
                 
-                # Use mplfinance to plot candlesticks on price axis
-                mpf.plot(
-                    df, type='candle',
-                    ax=ax_price, volume=False,
-                    style='yahoo' if self.theme.get() == "light" else "charles"
-                )
-                
-                # Plot RSI on separate axis
-                ax_rsi.plot(df.index, df['rsi'], color='blue', linewidth=1)
-                ax_rsi.axhline(30, color='green', linestyle='--', alpha=0.5)
-                ax_rsi.axhline(70, color='red', linestyle='--', alpha=0.5)
-                ax_rsi.fill_between(df.index, df['rsi'], 30, where=(df['rsi'] < 30), color='green', alpha=0.3)
-                ax_rsi.fill_between(df.index, df['rsi'], 70, where=(df['rsi'] > 70), color='red', alpha=0.3)
-                ax_rsi.set_ylabel('RSI')
-                ax_rsi.grid(True, alpha=0.2)
-                ax_rsi.set_ylim(0, 100)
             else:
-                # Create a single plot with price and volume
-                fig = plt.figure(figsize=(12, 8))
-                
-                # Create a 2x1 grid with specific height ratios for price and volume
-                gs = fig.add_gridspec(2, 1, height_ratios=[4, 1], hspace=0.1)
-                
-                # Create the axes
-                ax_price = fig.add_subplot(gs[0])
-                ax_volume = fig.add_subplot(gs[1], sharex=ax_price)
-                
-                # Title for the figure
-                fig.suptitle(f"{symbol} - {timeframe}", y=0.98, fontsize=14)
+                # Create simpler 2-row layout with price and volume
+                price_ax = plt.subplot2grid((4, 1), (0, 0), rowspan=3)
+                volume_ax = plt.subplot2grid((4, 1), (3, 0), rowspan=1, sharex=price_ax)
                 
                 # Plot candlesticks
-                mpf.plot(
-                    df, type='candle',
-                    ax=ax_price, volume=False,
-                    style='yahoo' if self.theme.get() == "light" else "charles"
-                )
+                mpf.plot(df, type='candle', ax=price_ax, volume=False,
+                        style='yahoo' if self.theme.get() == "light" else "charles")
                 
-                # Plot volume
-                ax_volume.bar(df.index, df['tick_volume'], color='blue', alpha=0.5, width=0.0005)
-                ax_volume.set_ylabel('Volume')
+                # Add volume
+                volume_ax.bar(df.index, df['tick_volume'], color='blue', alpha=0.3)
+                volume_ax.set_ylabel('Volume')
             
-            # Adjust layout and create canvas
+            # Set chart title
+            fig.suptitle(f"{symbol} - {timeframe}", y=0.98)
+            
+            # Adjust layout
             plt.tight_layout()
-            plt.subplots_adjust(top=0.95)  # Make room for the title
+            plt.subplots_adjust(top=0.9)
             
+            # Create canvas and add to frame
             canvas = FigureCanvasTkAgg(fig, master=self.chart_frame)
             canvas.draw()
             canvas.get_tk_widget().pack(fill="both", expand=True)
+            
+            # Add a toolbar for interactions
+            from matplotlib.backends.backend_tkagg import NavigationToolbar2Tk
+            toolbar = NavigationToolbar2Tk(canvas, self.chart_frame)
+            toolbar.update()
             
         except Exception as e:
             logger.error(f"Error loading chart: {str(e)}")
