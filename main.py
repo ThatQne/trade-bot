@@ -414,30 +414,30 @@ class TradingBot:
             logger.error(f"Error getting symbols: {e}")
             return []
 
-def update_symbol_mapping(self):
-    """Update the symbol mapping based on broker's available symbols"""
-    if not self.connected:
-        return
-    
-    try:
-        # Get all available symbols
-        broker_symbols = [symbol.name for symbol in mt5.symbols_get()]
+    def update_symbol_mapping(self):
+        """Update the symbol mapping based on broker's available symbols"""
+        if not self.connected:
+            return
         
-        # Check for common index names and create mappings
-        us30_variants = [s for s in broker_symbols if any(x in s.upper() for x in ["US30", "DOW", "DJ30", "USTEC"])]
-        nasdaq_variants = [s for s in broker_symbols if any(x in s.upper() for x in ["NASDAQ", "NAS100", "NDX", "US100"])]
-        sp500_variants = [s for s in broker_symbols if any(x in s.upper() for x in ["SPX", "SP500", "US500"])]
-        
-        # Update the mapping with broker-specific names
-        self.symbol_mapping = {
-            "US30": us30_variants if us30_variants else ["US30", "U30USD", "DOW30"],
-            "NASDAQ": nasdaq_variants if nasdaq_variants else ["NASDAQ", "NASUSD", "NDX"],
-            "SPX500": sp500_variants if sp500_variants else ["SPX500", "SPXUSD"]
-        }
-        
-        logger.info(f"Updated symbol mappings with broker-specific names")
-    except Exception as e:
-        logger.error(f"Error updating symbol mappings: {e}")
+        try:
+            # Get all available symbols
+            broker_symbols = [symbol.name for symbol in mt5.symbols_get()]
+            
+            # Check for common index names and create mappings
+            us30_variants = [s for s in broker_symbols if any(x in s.upper() for x in ["US30", "DOW", "DJ30", "USTEC"])]
+            nasdaq_variants = [s for s in broker_symbols if any(x in s.upper() for x in ["NASDAQ", "NAS100", "NDX", "US100"])]
+            sp500_variants = [s for s in broker_symbols if any(x in s.upper() for x in ["SPX", "SP500", "US500"])]
+            
+            # Update the mapping with broker-specific names
+            self.symbol_mapping = {
+                "US30": us30_variants if us30_variants else ["US30", "U30USD", "DOW30"],
+                "NASDAQ": nasdaq_variants if nasdaq_variants else ["NASDAQ", "NASUSD", "NDX"],
+                "SPX500": sp500_variants if sp500_variants else ["SPX500", "SPXUSD"]
+            }
+            
+            logger.info(f"Updated symbol mappings with broker-specific names")
+        except Exception as e:
+            logger.error(f"Error updating symbol mappings: {e}")
     
     def analyze_price_action(self, df):
         """Enhanced price action analysis using advanced patterns and multi-factor confirmation"""

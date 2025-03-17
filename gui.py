@@ -586,7 +586,10 @@ class TradingBotGUI:
 
     def refresh_symbols(self):
         """Refresh available symbols from the broker"""
-        if self.account_connected.get():
+        if not self.account_connected.get():
+            return
+            
+        try:
             symbols = self.bot.get_available_symbols()
             if symbols:
                 self.available_symbols = symbols
@@ -595,32 +598,41 @@ class TradingBotGUI:
                 self.symbol_combo['values'] = symbols
                 self.chart_symbol_combo['values'] = symbols
                 
-                # Update config with new symbols
-                self.bot.config["trading"]["symbols"] = symbols[:10]  # Take first 10 as default traded symbols
-                self.bot.save_config()
+                # Update config with new symbols if there are enough
+                if len(symbols) >= 5:  # Make sure we have enough symbols
+                    self.bot.config["trading"]["symbols"] = symbols[:10]  # Take first 10 as default
+                    self.bot.save_config()
                 
                 logger.info(f"Updated symbol lists with {len(symbols)} symbols from broker")
+        except Exception as e:
+            logger.error(f"Error refreshing symbols: {e}")
+            messagebox.showerror("Symbol Error", f"Failed to get symbols: {str(e)}")
     
     def connect_to_mt5(self):
         """Connect to MetaTrader 5 platform and load available symbols"""
         if not self.account_connected.get():
-            result = self.bot.connect()
-            if result:
-                self.account_connected.set(True)
-                self.connection_label.config(text="Connected", foreground="green")
-                
-                # Update the symbol mapping from broker's data
-                self.bot.update_symbol_mapping()
-                
-                # Get available symbols from the broker
-                self.refresh_symbols()
-                
-                messagebox.showinfo("Connection", "Successfully connected to MetaTrader 5")
-                self.refresh_account_info()
-                self.refresh_positions()
-                self.connect_button.config(text="Disconnect from MT5")
-            else:
-                messagebox.showerror("Connection Error", "Failed to connect to MetaTrader 5")
+            try:
+                result = self.bot.connect()
+                if result:
+                    self.account_connected.set(True)
+                    self.connection_label.config(text="Connected", foreground="green")
+                    
+                    # Update the symbol mapping if method exists
+                    if hasattr(self.bot, 'update_symbol_mapping'):
+                        self.bot.update_symbol_mapping()
+                    
+                    # Get available symbols from the broker if method exists
+                    if hasattr(self.bot, 'get_available_symbols'):
+                        self.refresh_symbols()
+                    
+                    messagebox.showinfo("Connection", "Successfully connected to MetaTrader 5")
+                    self.refresh_account_info()
+                    self.refresh_positions()
+                    self.connect_button.config(text="Disconnect from MT5")
+                else:
+                    messagebox.showerror("Connection Error", "Failed to connect to MetaTrader 5")
+            except Exception as e:
+                messagebox.showerror("Connection Error", f"Error connecting to MT5: {str(e)}")
         else:
             self.bot.disconnect()
             self.account_connected.set(False)
@@ -719,23 +731,27 @@ class TradingBotGUI:
         if not self.account_connected.get():
             return
             
-        account_info = self.bot.get_account_summary()
-        if account_info:
-            # Update account labels
-            self.account_labels["server"].config(text=self.bot.config["account"]["server"])
-            self.account_labels["login"].config(text=str(self.bot.config["account"]["login"]))
-            self.account_labels["balance"].config(text=f"{account_info['balance']:.2f}")
-            self.account_labels["equity"].config(text=f"{account_info['equity']:.2f}")
-            self.account_labels["profit"].config(
-                text=f"{account_info['profit']:.2f}",
-                foreground="green" if account_info['profit'] >= 0 else "red"
-            )
-            self.account_labels["margin"].config(text=f"{account_info['margin']:.2f}")
-            self.account_labels["free_margin"].config(text=f"{account_info['free_margin']:.2f}")
-            self.account_labels["margin_level"].config(text=f"{account_info['margin_level']:.2f}%" if account_info['margin_level'] else "0.00%")
-            
-            # Update status bar
-            self.balance_label.config(text=f"Balance: {account_info['balance']:.2f} {account_info['currency']}")
+        try:
+            if hasattr(self.bot, 'get_account_summary'):
+                account_info = self.bot.get_account_summary()
+                if account_info:
+                    # Update account labels
+                    self.account_labels["server"].config(text=self.bot.config["account"]["server"])
+                    self.account_labels["login"].config(text=str(self.bot.config["account"]["login"]))
+                    self.account_labels["balance"].config(text=f"{account_info['balance']:.2f}")
+                    self.account_labels["equity"].config(text=f"{account_info['equity']:.2f}")
+                    self.account_labels["profit"].config(
+                        text=f"{account_info['profit']:.2f}",
+                        foreground="green" if account_info['profit'] >= 0 else "red"
+                    )
+                    self.account_labels["margin"].config(text=f"{account_info['margin']:.2f}")
+                    self.account_labels["free_margin"].config(text=f"{account_info['free_margin']:.2f}")
+                    self.account_labels["margin_level"].config(text=f"{account_info['margin_level']:.2f}%" if account_info['margin_level'] else "0.00%")
+                    
+                    # Update status bar
+                    self.balance_label.config(text=f"Balance: {account_info['balance']:.2f} {account_info['currency']}")
+        except Exception as e:
+            logger.error(f"Error refreshing account info: {e}")
     
     def refresh_positions(self):
         """Refresh open positions"""
@@ -917,89 +933,112 @@ class TradingBotGUI:
         for widget in self.chart_frame.winfo_children():
             widget.destroy()
         
-        # Get market data
-        df = self.bot.get_market_data(symbol, timeframe, bars)
+        # Show loading message
+        loading_label = ttk.Label(self.chart_frame, text="Loading chart data...")
+        loading_label.pack(pady=50)
+        self.chart_frame.update()
         
-        if df is None or len(df) == 0:
-            ttk.Label(self.chart_frame, text="No data available for the selected symbol/timeframe").pack(pady=50)
-            return
-        
-        # Add indicators
-        df = self.bot.calculate_indicators(df)
-        
-        # Set datetime as index
-        df.set_index("time", inplace=True)
-        
-        # Style for the chart based on theme
-        if self.theme.get() == "dark":
-            plt.style.use("dark_background")
-            candle_up = "#26a69a"
-            candle_down = "#ef5350"
-        else:
-            plt.style.use("default")
-            candle_up = "#26a69a"
-            candle_down = "#ef5350"
-        
-        # Create candlestick chart
-        mpf_style = mpf.make_mpf_style(
-            base_mpf_style="yahoo" if self.theme.get() == "light" else "charles",
-            gridstyle=":",
-            gridaxis="both",
-            y_on_right=False,
-            facecolor="white" if self.theme.get() == "light" else "#121212",
-            edgecolor="black" if self.theme.get() == "light" else "#333333",
-            figcolor="white" if self.theme.get() == "light" else "#121212",
-            gridcolor="lightgrey" if self.theme.get() == "light" else "#333333",
-            rc={'axes.labelcolor': 'black' if self.theme.get() == "light" else "white"}
-        )
-        
-        # Create layout and add plots
-        if 'rsi' in df.columns:
-            # Add RSI in subplot
-            kwargs = dict(
-                figratio=(12, 8),
-                figscale=1.2,
-                volume=False,  # Don't include volume in the main plot
-                title=f"{symbol} - {timeframe}",
-                type='candle',
-                style=mpf_style,
-                addplot=[
-                    # Empty addplot to force panel creation
-                    mpf.make_addplot([], panel=1, secondary_y=False)
-                ],
-                panel_ratios=(4, 1),
-                returnfig=True  # Return the figure and axes
+        try:
+            # Get market data
+            df = self.bot.get_market_data(symbol, timeframe, bars)
+            
+            if df is None or len(df) == 0:
+                for widget in self.chart_frame.winfo_children():
+                    widget.destroy()
+                ttk.Label(self.chart_frame, text="No data available for the selected symbol/timeframe").pack(pady=50)
+                return
+            
+            # Add indicators
+            df = self.bot.calculate_indicators(df)
+            
+            # Set datetime as index
+            df.set_index("time", inplace=True)
+            
+            # Style for the chart based on theme
+            if self.theme.get() == "dark":
+                plt.style.use("dark_background")
+                candle_up = "#26a69a"
+                candle_down = "#ef5350"
+            else:
+                plt.style.use("default")
+                candle_up = "#26a69a"
+                candle_down = "#ef5350"
+            
+            # Create candlestick chart
+            mpf_style = mpf.make_mpf_style(
+                base_mpf_style="yahoo" if self.theme.get() == "light" else "charles",
+                gridstyle=":",
+                gridaxis="both",
+                y_on_right=False,
+                facecolor="white" if self.theme.get() == "light" else "#121212",
+                edgecolor="black" if self.theme.get() == "light" else "#333333",
+                figcolor="white" if self.theme.get() == "light" else "#121212",
+                gridcolor="lightgrey" if self.theme.get() == "light" else "#333333",
+                rc={'axes.labelcolor': 'black' if self.theme.get() == "light" else "white"}
             )
             
-            fig, axes = mpf.plot(df, **kwargs)
+            # Remove loading message
+            for widget in self.chart_frame.winfo_children():
+                widget.destroy()
             
-            # Plot RSI on the secondary panel
-            axes[0].set_ylabel('Price')
-            axes[2].plot(df.index, df['rsi'], color='blue', linewidth=0.8)
-            axes[2].axhline(y=30, color='green', linestyle='-', alpha=0.3)
-            axes[2].axhline(y=70, color='red', linestyle='-', alpha=0.3)
-            axes[2].fill_between(df.index, df['rsi'], 30, where=(df['rsi'] < 30), color='green', alpha=0.3)
-            axes[2].fill_between(df.index, df['rsi'], 70, where=(df['rsi'] > 70), color='red', alpha=0.3)
-            axes[2].set_ylabel('RSI')
-        else:
-            # Just plot price with volume
-            kwargs = dict(
-                figratio=(12, 8),
-                figscale=1.2,
-                volume=True,
-                title=f"{symbol} - {timeframe}",
-                type='candle',
-                style=mpf_style,
-                returnfig=True  # Return the figure and axes
-            )
-            
-            fig, axes = mpf.plot(df, **kwargs)
-            axes[0].set_ylabel('Price')
-        
-        # Create Tkinter canvas
-        canvas = FigureCanvasTkAgg(fig, master=self.chart_frame)
-        canvas.draw()
-        canvas.get_tk_widget().pack(fill="both", expand=True)
+            # Create subplots
+            try:
+                if 'rsi' in df.columns:
+                    # Setup figure with subplots
+                    fig = plt.figure(figsize=(12, 8))
+                    gs = fig.add_gridspec(2, 1, height_ratios=[3, 1], hspace=0.1)
+                    ax1 = fig.add_subplot(gs[0])
+                    ax2 = fig.add_subplot(gs[1], sharex=ax1)
+                    
+                    # Plot candlesticks on the main axis
+                    mpf.plot(
+                        df, type='candle', style=mpf_style,
+                        ax=ax1, volume=False,  # Don't include volume in the main plot
+                        title=f"{symbol} - {timeframe}"
+                    )
+                    
+                    # Plot RSI on the secondary panel
+                    ax1.set_ylabel('Price')
+                    ax2.plot(df.index, df['rsi'], color='blue', linewidth=0.8)
+                    ax2.axhline(y=30, color='green', linestyle='-', alpha=0.3)
+                    ax2.axhline(y=70, color='red', linestyle='-', alpha=0.3)
+                    ax2.fill_between(df.index, df['rsi'], 30, where=(df['rsi'] < 30), color='green', alpha=0.3)
+                    ax2.fill_between(df.index, df['rsi'], 70, where=(df['rsi'] > 70), color='red', alpha=0.3)
+                    ax2.set_ylabel('RSI')
+                    ax2.grid(True, alpha=0.3)
+                    
+                else:
+                    # Create a single figure for price and volume
+                    fig = plt.figure(figsize=(12, 8))
+                    ax1 = fig.add_subplot(1, 1, 1)
+                    
+                    # Plot candlesticks
+                    mpf.plot(
+                        df, type='candle', style=mpf_style,
+                        title=f"{symbol} - {timeframe}",
+                        ax=ax1, volume=True  # Include volume
+                    )
+                    ax1.set_ylabel('Price')
+                
+                # Finalize the figure
+                fig.tight_layout()
+                
+                # Create Tkinter canvas
+                canvas = FigureCanvasTkAgg(fig, master=self.chart_frame)
+                canvas.draw()
+                canvas.get_tk_widget().pack(fill="both", expand=True)
+                
+            except Exception as e:
+                logger.error(f"Chart plotting error: {e}")
+                import traceback
+                logger.error(traceback.format_exc())
+                ttk.Label(self.chart_frame, text=f"Error plotting chart: {str(e)}").pack(pady=50)
+                
+        except Exception as e:
+            logger.error(f"Error loading chart: {e}")
+            for widget in self.chart_frame.winfo_children():
+                widget.destroy()
+            ttk.Label(self.chart_frame, text=f"Error loading chart: {str(e)}").pack(pady=50)
     
     def clear_logs(self):
         """Clear log display"""
