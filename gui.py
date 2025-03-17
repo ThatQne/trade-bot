@@ -12,6 +12,7 @@ from datetime import datetime
 import os
 import sys
 import logging
+import matplotlib.dates as mdates
 
 # Import the trading bot
 from main import TradingBot, logger
@@ -1282,58 +1283,87 @@ class TradingBotGUI:
             self.bot.save_config()
 
     def update_signals(self):
-        """Update signals display with more robust error handling"""
+        """Update signals display with better persistence"""
         if not self.account_connected.get():
             return
                 
         try:
-            # Clear existing signals
+            # Get recent signals
+            current_signals = self.bot.run_trading_cycle()
+            
+            # Get current time for expiration check
+            current_time = datetime.now()
+            
+            # Store signals with timestamp if not already present
+            if not hasattr(self, 'stored_signals'):
+                self.stored_signals = []
+            
+            # Process new signals - add them to stored signals
+            if current_signals:
+                for signal in current_signals:
+                    # Add expiry time to new signals (5 minutes from now)
+                    signal['expiry_time'] = current_time + timedelta(minutes=5)
+                    
+                    # Check if signal already exists (same symbol, timeframe, action)
+                    existing_signal = next((s for s in self.stored_signals 
+                                        if s['symbol'] == signal['symbol'] 
+                                        and s['timeframe'] == signal['timeframe']
+                                        and s['action'] == signal['action']), None)
+                    
+                    if existing_signal:
+                        # Update existing signal with new data
+                        existing_signal.update(signal)
+                    else:
+                        # Add new signal to stored signals
+                        self.stored_signals.append(signal)
+                        logger.info(f"New signal added: {signal['symbol']} {signal['timeframe']} {signal['action']}")
+            
+            # Remove expired signals or signals with strength < 4
+            self.stored_signals = [s for s in self.stored_signals 
+                                if s['expiry_time'] > current_time and s['strength'] >= 4]
+            
+            # Clear existing signals in treeview
             for item in self.signals_tree.get_children():
                 self.signals_tree.delete(item)
+            
+            # Add all stored signals to treeview
+            if self.stored_signals:
+                logger.debug(f"Displaying {len(self.stored_signals)} signals in dashboard")
                 
-            # Get recent signals
-            signals = self.bot.run_trading_cycle()
-            if not signals:
-                logger.debug("No trading signals found in this cycle")
-                return
+                # Sort signals by strength
+                sorted_signals = sorted(self.stored_signals, key=lambda x: x['strength'], reverse=True)
                 
-            logger.info(f"Displaying {len(signals)} trading signals in dashboard")
-            
-            # Add signals to treeview with better error handling
-            for signal in signals:
-                try:
-                    # Format values with proper defaults for missing fields
-                    timestamp = signal.get("timestamp", datetime.now().strftime("%Y-%m-%d %H:%M:%S"))
-                    symbol = signal.get("symbol", "")
-                    action = signal.get("action", "").upper()
-                    timeframe = signal.get("timeframe", "")
-                    
-                    # Format the strength with trade type
-                    strength_display = f"{signal.get('strength', 0):.1f}/10"
-                    if 'trade_type' in signal:
-                        strength_display += f" ({signal['trade_type']})"
-                    
-                    # Format prices with proper precision based on symbol
-                    entry = f"{signal.get('entry', 0):.5f}" if signal.get('entry') else "-"
-                    sl = f"{signal.get('stop_loss', 0):.5f}" if signal.get('stop_loss') else "-"
-                    tp = f"{signal.get('take_profit', 0):.5f}" if signal.get('take_profit') else "-"
-                    
-                    self.signals_tree.insert(
-                        "", "end",
-                        values=(timestamp, symbol, action, timeframe, strength_display, entry, sl, tp)
-                    )
-                    
-                    # Update the UI immediately to ensure signals are displayed
-                    self.root.update_idletasks()
-                    
-                except Exception as e:
-                    logger.error(f"Error adding signal to tree: {e}")
-                    import traceback
-                    logger.error(traceback.format_exc())
-            
-            # Force a refresh of the treeview
-            self.signals_tree.yview_moveto(0)
-            
+                for signal in sorted_signals:
+                    try:
+                        # Format values with proper defaults for missing fields
+                        timestamp = signal.get("timestamp", "")
+                        symbol = signal.get("symbol", "")
+                        action = signal.get("action", "").upper()
+                        timeframe = signal.get("timeframe", "")
+                        
+                        # Format the strength with trade type
+                        strength_display = f"{signal.get('strength', 0):.1f}/10"
+                        if 'trade_type' in signal:
+                            strength_display += f" ({signal['trade_type']})"
+                        
+                        # Format prices with proper precision based on symbol
+                        entry = f"{signal.get('entry', 0):.5f}" if signal.get('entry') else "-"
+                        sl = f"{signal.get('stop_loss', 0):.5f}" if signal.get('stop_loss') else "-"
+                        tp = f"{signal.get('take_profit', 0):.5f}" if signal.get('take_profit') else "-"
+                        
+                        self.signals_tree.insert(
+                            "", "end",
+                            values=(timestamp, symbol, action, timeframe, strength_display, entry, sl, tp)
+                        )
+                        
+                    except Exception as e:
+                        logger.error(f"Error adding signal to tree: {e}")
+                        import traceback
+                        logger.error(traceback.format_exc())
+                
+                # Force a refresh of the treeview
+                self.signals_tree.yview_moveto(0)
+                
         except Exception as e:
             logger.error(f"Error updating signals display: {e}")
             import traceback
