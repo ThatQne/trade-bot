@@ -382,19 +382,19 @@ class TradingBot:
             return df
         
     def get_available_symbols(self):
-        """Get all available symbols from the broker with proper filtering"""
+        """Get all available symbols from the broker with minimal filtering"""
         if not self.connected:
             if not self.connect():
                 return []
         
         try:
-            # Get all available symbols without filtering
+            # Get all available symbols
             all_symbols = mt5.symbols_get()
             if all_symbols is None:
                 logger.error("Failed to get symbols from broker")
                 return []
             
-            # Process all symbols
+            # Process all symbols with less restrictive filtering
             tradable_symbols = []
             for symbol in all_symbols:
                 symbol_name = symbol.name
@@ -403,13 +403,8 @@ class TradingBot:
                 if symbol_info is None:
                     continue
                 
-                # Check if symbol is tradable - differently for different brokers
-                is_tradable = True
-                if hasattr(symbol_info, 'trade_mode'):
-                    is_tradable = symbol_info.trade_mode != mt5.SYMBOL_TRADE_MODE_DISABLED
-                
-                # Continue only if symbol is visible and trading is allowed
-                if is_tradable and symbol_info.visible:
+                # Consider any visible symbol as potentially tradable
+                if True: #symbol_info.visible:
                     # Calculate spread in pips for proper comparison
                     pip_size = self._get_pip_size(symbol_name, symbol_info.digits)
                     spread_in_pips = symbol_info.spread * pip_size * 10000
@@ -422,7 +417,9 @@ class TradingBot:
                         'digits': symbol_info.digits,
                         'pip_value': pip_size,
                         'volume_min': getattr(symbol_info, 'volume_min', 0.01),
-                        'volume_step': getattr(symbol_info, 'volume_step', 0.01)
+                        'volume_step': getattr(symbol_info, 'volume_step', 0.01),
+                        # Add classification tags
+                        'type': self._classify_symbol_type(symbol_name)
                     })
             
             # Sort by spread (lowest first)
@@ -439,15 +436,124 @@ class TradingBot:
             
             # Print the top symbols with their spreads for reference
             for i, symbol in enumerate(tradable_symbols[:10]):
-                logger.info(f"Top {i+1}: {symbol['name']} - Spread: {symbol['spread']:.1f} pips")
+                logger.info(f"Top {i+1}: {symbol['name']} - Spread: {symbol['spread']:.1f} pips - Type: {symbol['type']}")
             
-            # Return top 30 symbols with lowest spread
-            return symbol_names[:30]
+            # Return all tradable symbols but mark top 30 for analysis priority
+            self.analysis_priority_symbols = symbol_names[:30]
+            
+            return symbol_names  # Return all tradable symbols
         except Exception as e:
             logger.error(f"Error getting symbols: {e}")
             import traceback
             logger.error(traceback.format_exc())
             return []
+        
+    def _classify_trade_type(self, timeframe, signal_strength):
+        """Classify trade type based on timeframe and strength"""
+        # Base classification on timeframe
+        if timeframe in ["M1", "M5"]:
+            trade_type = "Scalp"
+        elif timeframe in ["M15", "M30"]:
+            trade_type = "Short-term"
+        elif timeframe in ["H1", "H4"]:
+            trade_type = "Swing"
+        else:  # D1, W1, etc.
+            trade_type = "Position"
+        
+        # Adjust based on signal strength
+        if signal_strength >= 8:
+            confidence = "Strong"
+        elif signal_strength >= 6:
+            confidence = "Moderate"
+        else:
+            confidence = "Tentative"
+            
+        return f"{confidence} {trade_type}"
+
+    def _analyze_symbol_timeframe(self, symbol, timeframe):
+        """Analyze a single symbol and timeframe for signals with improved classification"""
+        try:
+            # Get and process market data
+            df = self.get_market_data(symbol, timeframe)
+            if df is None or len(df) == 0:
+                return []
+                
+            # Calculate indicators
+            df = self.calculate_indicators(df)
+            if df is None:
+                return []
+            
+            # Analyze price action
+            pa_signals, levels = self.analyze_price_action(df)
+            if pa_signals is None:
+                return []
+            
+            # If we have a signal with sufficient strength
+            if (pa_signals["buy"] or pa_signals["sell"]) and pa_signals["strength"] >= 5:
+                trade_type = self._classify_trade_type(timeframe, pa_signals["strength"])
+                
+                signal = {
+                    "symbol": symbol,
+                    "timeframe": timeframe,
+                    "action": "buy" if pa_signals["buy"] else "sell",
+                    "strength": pa_signals["strength"],
+                    "trade_type": trade_type,
+                    "patterns": pa_signals["patterns"],
+                    "confirmations": pa_signals.get("confirmations", []),
+                    "warnings": pa_signals.get("warnings", []),
+                    "entry": levels["entry"],
+                    "stop_loss": levels["stop_loss"],
+                    "take_profit": levels["take_profit"],
+                    "timestamp": datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+                }
+                
+                # Calculate position size
+                lot_size = self.calculate_position_size(
+                    symbol, levels["entry"], levels["stop_loss"]
+                )
+                signal["lot_size"] = lot_size
+                
+                # Calculate risk/reward and add to signal
+                if levels["entry"] and levels["stop_loss"] and levels["take_profit"]:
+                    risk = abs(levels["entry"] - levels["stop_loss"])
+                    reward = abs(levels["take_profit"] - levels["entry"])
+                    rr_ratio = reward / risk if risk > 0 else 0
+                    signal["rr_ratio"] = rr_ratio
+                    
+                return [signal]
+            return []
+        except Exception as e:
+            logger.error(f"Error analyzing {symbol} {timeframe}: {e}")
+            return []
+
+    def _classify_symbol_type(self, symbol_name):
+        """Classify symbol into categories for better filtering"""
+        symbol_upper = symbol_name.upper()
+        
+        # Check for forex pairs
+        if (len(symbol_name) == 6 and 
+            all(c in "EURUSDGBPCADAUDNZDJPYCHFSGDSEK" for c in symbol_upper)):
+            return "forex"
+            
+        # Check for indices
+        elif any(index in symbol_upper for index in ["SPX", "US30", "US500", "NDX", "NAS", "DJ", "DAX", "FTSE"]):
+            return "index"
+            
+        # Check for metals
+        elif any(metal in symbol_upper for metal in ["XAU", "GOLD", "XAG", "SILVER"]):
+            return "metal"
+            
+        # Check for crypto
+        elif any(crypto in symbol_upper for crypto in ["BTC", "ETH", "LTC", "XRP"]):
+            return "crypto"
+            
+        # Check for commodities
+        elif any(commodity in symbol_upper for commodity in ["OIL", "BRENT", "GAS", "NG"]):
+            return "commodity"
+            
+        # Default
+        else:
+            return "other"
 
     def _update_index_mapping(self, available_symbols):
         """Update index symbol mapping based on what's actually available at the broker"""
@@ -1432,7 +1538,7 @@ class TradingBot:
             return []
 
     def run_trading_cycle(self):
-        """Enhanced trading cycle with asyncio for better performance"""
+        """Enhanced trading cycle with improved async approach and better symbol selection"""
         if not self.connected:
             logger.info("Not connected to MT5. Attempting to connect...")
             if not self.connect():
@@ -1449,40 +1555,77 @@ class TradingBot:
         
         # Create analysis tasks using asyncio
         try:
-            # Create a list of symbols to analyze
-            symbols_to_analyze = current_symbols[:30]  # Limit to 30 symbols
+            # Prioritize analysis - analyze top 30 symbols first, then others if time permits
+            top_symbols = current_symbols[:30] if len(current_symbols) > 30 else current_symbols
             
             # Randomize to avoid always analyzing the same symbols first
             import random
-            random.shuffle(symbols_to_analyze)
+            random.shuffle(top_symbols)
             
             # Create tasks for all symbol/timeframe combinations
             async def analyze_all():
-                # Create a limited thread pool for MT5 calls which need to be in the same thread
-                with ThreadPoolExecutor(max_workers=4) as executor:
+                # Create a thread pool with limited concurrency to avoid overloading MT5
+                with ThreadPoolExecutor(max_workers=6) as executor:
                     loop = asyncio.get_event_loop()
-                    tasks = []
                     
-                    # Create analysis tasks for each symbol/timeframe combination
-                    for symbol in symbols_to_analyze:
+                    # First batch - analysis tasks for top symbols across all timeframes
+                    priority_tasks = []
+                    for symbol in top_symbols:
+                        # Analyze all configured timeframes for each symbol
                         for timeframe in self.config["trading"]["timeframes"]:
-                            tasks.append(loop.run_in_executor(
+                            priority_tasks.append(loop.run_in_executor(
                                 executor,
                                 self._analyze_symbol_timeframe,
                                 symbol,
                                 timeframe
                             ))
                     
-                    # Run tasks in batches to avoid overwhelming the system
-                    batch_size = 8
-                    for i in range(0, len(tasks), batch_size):
-                        batch_results = await asyncio.gather(*tasks[i:i+batch_size])
-                        for signals in batch_results:
-                            all_signals.extend(signals if signals else [])
+                    # Run priority tasks first (top symbols)
+                    logger.info(f"Analyzing {len(priority_tasks)} priority symbol/timeframe combinations")
+                    start_time = time.time()
+                    
+                    # Use asyncio.gather to run tasks concurrently but with controlled concurrency
+                    priority_results = await asyncio.gather(*priority_tasks)
+                    
+                    # Collect all signals
+                    for signals in priority_results:
+                        if signals:
+                            all_signals.extend(signals)
+                    
+                    elapsed = time.time() - start_time
+                    logger.info(f"Priority analysis completed in {elapsed:.2f}s, found {len(all_signals)} signals")
+                    
+                    # If time permits and we have less than 30 symbols, analyze more symbols
+                    if len(top_symbols) < len(current_symbols) and elapsed < 8.0:  # If priority analysis took less than 8 seconds
+                        remaining_symbols = [s for s in current_symbols if s not in top_symbols]
+                        random.shuffle(remaining_symbols)
+                        
+                        # Only analyze a subset of remaining symbols to limit total time
+                        additional_symbols = remaining_symbols[:20]
+                        additional_tasks = []
+                        
+                        for symbol in additional_symbols:
+                            for timeframe in self.config["trading"]["timeframes"]:
+                                additional_tasks.append(loop.run_in_executor(
+                                    executor,
+                                    self._analyze_symbol_timeframe,
+                                    symbol,
+                                    timeframe
+                                ))
+                        
+                        if additional_tasks:
+                            logger.info(f"Analyzing {len(additional_tasks)} additional symbol/timeframe combinations")
+                            additional_results = await asyncio.gather(*additional_tasks)
+                            
+                            for signals in additional_results:
+                                if signals:
+                                    all_signals.extend(signals)
+                            
+                            logger.info(f"Additional analysis found {len(all_signals) - len(priority_results)} more signals")
                     
                     return all_signals
             
-            # Run the asyncio event loop
+            # Run the asyncio event loop with a timeout to prevent hanging
             if hasattr(asyncio, 'run'):  # Python 3.7+
                 signals_list = asyncio.run(analyze_all())
             else:  # Python 3.6 and below
@@ -1502,7 +1645,7 @@ class TradingBot:
             logger.warning("Falling back to sequential analysis")
             signals_list = []
             
-            for symbol in symbols_to_analyze[:10]:  # Analyze fewer symbols in fallback mode
+            for symbol in top_symbols[:10]:  # Analyze fewer symbols in fallback mode
                 for timeframe in self.config["trading"]["timeframes"]:
                     signals = self._analyze_symbol_timeframe(symbol, timeframe)
                     if signals:
@@ -1516,6 +1659,7 @@ class TradingBot:
             if "warnings" not in signal:
                 signal["warnings"] = []
             
+            # Add market condition adjustment
             if market_condition.get('bias') == 'bullish':
                 if signal["action"] == "buy":
                     signal["strength"] = min(10, signal["strength"] + 0.5)
@@ -1535,6 +1679,7 @@ class TradingBot:
         # Sort signals by strength and filter
         signals_list.sort(key=lambda x: x["strength"], reverse=True)
         
+        # Filter to get only strong signals with limited warnings
         filtered_signals = [
             s for s in signals_list 
             if s["strength"] >= 6 and len(s.get("warnings", [])) <= 2
@@ -1544,7 +1689,9 @@ class TradingBot:
         if filtered_signals:
             logger.info(f"Found {len(filtered_signals)} strong trading signals after filtering")
             for i, signal in enumerate(filtered_signals[:3]):  # Log top 3 signals
-                logger.info(f"Signal {i+1}: {signal['symbol']} {signal['timeframe']} {signal['action'].upper()} (Strength: {signal['strength']:.1f})")
+                trade_type = signal.get('trade_type', '')
+                logger.info(f"Signal {i+1}: {signal['symbol']} {signal['timeframe']} {signal['action'].upper()} "
+                        f"(Strength: {signal['strength']:.1f}) - {trade_type}")
         
         return filtered_signals
     

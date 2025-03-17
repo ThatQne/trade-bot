@@ -963,7 +963,7 @@ class TradingBotGUI:
             messagebox.showerror("Error", "Invalid input. Please check lot size, SL, and TP values")
     
     def load_chart(self):
-        """Load and display a chart with more robust error handling"""
+        """Load chart with improved performance and robustness"""
         if not self.account_connected.get():
             messagebox.showwarning("Warning", "Not connected to MetaTrader 5")
             return
@@ -981,98 +981,122 @@ class TradingBotGUI:
         loading_label.pack(pady=50)
         self.chart_frame.update_idletasks()  # Force update to show loading message
         
+        # Load data in a background thread to prevent UI freezing
+        def load_chart_data():
+            try:
+                # Get market data
+                df = self.bot.get_market_data(symbol, timeframe, bars)
+                
+                if df is None or len(df) == 0:
+                    return None
+                    
+                # Calculate indicators
+                df = self.bot.calculate_indicators(df)
+                
+                # Set datetime as index
+                df.set_index("time", inplace=True)
+                
+                return df
+                
+            except Exception as e:
+                logger.error(f"Error fetching chart data: {e}")
+                return None
+        
+        # Create and start loading thread
+        load_thread = threading.Thread(target=lambda: self.after_chart_data_loaded(load_chart_data(), symbol, timeframe))
+        load_thread.daemon = True
+        load_thread.start()
+
+    def after_chart_data_loaded(self, df, symbol, timeframe):
+        """Handle chart plotting after data is loaded"""
+        # Remove loading message
+        for widget in self.chart_frame.winfo_children():
+            widget.destroy()
+        
+        if df is None:
+            ttk.Label(self.chart_frame, text=f"No data available for {symbol} on {timeframe} timeframe").pack(pady=50)
+            return
+        
         try:
-            # Get market data in a separate thread to avoid freezing the UI
-            def fetch_data():
-                return self.bot.get_market_data(symbol, timeframe, bars)
-                
-            df = fetch_data()
+            # Close any existing figures
+            plt.close('all')
             
-            if df is None or len(df) == 0:
-                for widget in self.chart_frame.winfo_children():
-                    widget.destroy()
-                ttk.Label(self.chart_frame, text=f"No data available for {symbol} on {timeframe} timeframe").pack(pady=50)
-                return
-            
-            # Calculate indicators (can take time for large datasets)
-            df = self.bot.calculate_indicators(df)
-            
-            # Set datetime as index
-            df.set_index("time", inplace=True)
-            
-            # Create figure with proper size first
-            plt.close('all')  # Close any existing figures to avoid memory leaks
-            
-            # Remove loading message
-            for widget in self.chart_frame.winfo_children():
-                widget.destroy()
-                
-            # Create a new figure explicitly
+            # Create a figure and axes
             fig = plt.figure(figsize=(12, 8), dpi=100)
             
-            # Create subplots based on what indicators we want to show
+            # Create price and indicator subplots
             if 'rsi' in df.columns:
-                # Create a 2-row subplot with price on top and RSI on bottom
-                price_ax = plt.subplot2grid((5, 1), (0, 0), rowspan=3)
-                volume_ax = plt.subplot2grid((5, 1), (3, 0), rowspan=1, sharex=price_ax)
-                rsi_ax = plt.subplot2grid((5, 1), (4, 0), rowspan=1, sharex=price_ax)
+                # Price chart (top)
+                ax1 = plt.subplot2grid((6, 1), (0, 0), rowspan=3, fig=fig)
+                # Volume (middle)
+                ax2 = plt.subplot2grid((6, 1), (3, 0), rowspan=1, fig=fig, sharex=ax1)
+                # RSI (bottom)
+                ax3 = plt.subplot2grid((6, 1), (4, 0), rowspan=2, fig=fig, sharex=ax1)
                 
-                # Plot candlesticks (manually for better control)
-                mpf.plot(df, type='candle', ax=price_ax, volume=False, 
-                        style='yahoo' if self.theme.get() == "light" else "charles")
-                        
-                # Add volume
-                volume_ax.bar(df.index, df['tick_volume'], color='blue', alpha=0.3)
-                volume_ax.set_ylabel('Volume')
+                # Add title
+                fig.suptitle(f"{symbol} - {timeframe}", fontsize=14)
                 
-                # Add RSI
-                rsi_ax.plot(df.index, df['rsi'], color='blue', linewidth=1)
-                rsi_ax.axhline(30, color='green', linestyle='--', alpha=0.5)
-                rsi_ax.axhline(70, color='red', linestyle='--', alpha=0.5)
-                rsi_ax.fill_between(df.index, df['rsi'], 30, where=(df['rsi'] < 30), color='green', alpha=0.3)
-                rsi_ax.fill_between(df.index, df['rsi'], 70, where=(df['rsi'] > 70), color='red', alpha=0.3)
-                rsi_ax.set_ylabel('RSI')
-                rsi_ax.set_ylim(0, 100)
+                # Plot OHLC data
+                mpf.plot(df, type='candle', style='yahoo', ax=ax1, volume=False)
                 
+                # Plot volume
+                ax2.bar(df.index, df['tick_volume'], color='blue', alpha=0.5)
+                ax2.set_ylabel('Volume')
+                
+                # Plot RSI
+                ax3.plot(df.index, df['rsi'], color='purple')
+                ax3.axhline(70, linestyle='--', color='r', alpha=0.5)
+                ax3.axhline(30, linestyle='--', color='g', alpha=0.5)
+                ax3.fill_between(df.index, df['rsi'], 30, where=(df['rsi'] < 30), color='green', alpha=0.3)
+                ax3.fill_between(df.index, df['rsi'], 70, where=(df['rsi'] > 70), color='red', alpha=0.3)
+                ax3.set_ylim(0, 100)
+                ax3.set_ylabel('RSI')
+                
+                # Remove x-axis tick labels from upper plots
+                ax1.tick_params(axis='x', labelsize=7)
+                ax1.set_xticklabels([])
+                ax2.tick_params(axis='x', labelsize=7)
+                ax2.set_xticklabels([])
             else:
-                # Create simpler 2-row layout with price and volume
-                price_ax = plt.subplot2grid((4, 1), (0, 0), rowspan=3)
-                volume_ax = plt.subplot2grid((4, 1), (3, 0), rowspan=1, sharex=price_ax)
+                # Simplified chart without RSI
+                ax1 = plt.subplot2grid((5, 1), (0, 0), rowspan=4, fig=fig)
+                ax2 = plt.subplot2grid((5, 1), (4, 0), rowspan=1, fig=fig, sharex=ax1)
                 
-                # Plot candlesticks
-                mpf.plot(df, type='candle', ax=price_ax, volume=False,
-                        style='yahoo' if self.theme.get() == "light" else "charles")
+                fig.suptitle(f"{symbol} - {timeframe}", fontsize=14)
+                mpf.plot(df, type='candle', style='yahoo', ax=ax1, volume=False)
                 
-                # Add volume
-                volume_ax.bar(df.index, df['tick_volume'], color='blue', alpha=0.3)
-                volume_ax.set_ylabel('Volume')
+                ax2.bar(df.index, df['tick_volume'], color='blue', alpha=0.5)
+                ax2.set_ylabel('Volume')
+                
+                ax1.tick_params(axis='x', labelsize=7)
+                ax1.set_xticklabels([])
             
-            # Set chart title
-            fig.suptitle(f"{symbol} - {timeframe}", y=0.98)
+            # Format the x-axis to display dates nicely
+            ax3 = plt.gca()
+            date_format = mdates.DateFormatter('%m-%d %H:%M')
+            ax3.xaxis.set_major_formatter(date_format)
+            plt.xticks(rotation=45)
             
             # Adjust layout
             plt.tight_layout()
-            plt.subplots_adjust(top=0.9)
             
-            # Create canvas and add to frame
+            # Create canvas to display the chart
             canvas = FigureCanvasTkAgg(fig, master=self.chart_frame)
             canvas.draw()
             canvas.get_tk_widget().pack(fill="both", expand=True)
             
-            # Add a toolbar for interactions
+            # Add toolbar for interactive features
             from matplotlib.backends.backend_tkagg import NavigationToolbar2Tk
             toolbar = NavigationToolbar2Tk(canvas, self.chart_frame)
             toolbar.update()
             
         except Exception as e:
-            logger.error(f"Error loading chart: {str(e)}")
+            logger.error(f"Error plotting chart: {str(e)}")
             import traceback
             logger.error(traceback.format_exc())
             
-            # Clear frame and show error
-            for widget in self.chart_frame.winfo_children():
-                widget.destroy()
-            ttk.Label(self.chart_frame, text=f"Error loading chart:\n{str(e)}").pack(pady=50)
+            # Show error message
+            ttk.Label(self.chart_frame, text=f"Error creating chart: {str(e)}").pack(pady=50)
     
     def clear_logs(self):
         """Clear log display"""
@@ -1258,10 +1282,10 @@ class TradingBotGUI:
             self.bot.save_config()
 
     def update_signals(self):
-        """Update signals display"""
+        """Update signals display with more robust error handling"""
         if not self.account_connected.get():
             return
-            
+                
         try:
             # Clear existing signals
             for item in self.signals_tree.get_children():
@@ -1269,45 +1293,95 @@ class TradingBotGUI:
                 
             # Get recent signals
             signals = self.bot.run_trading_cycle()
-            if signals:
-                for signal in signals:
-                    try:
-                        # Use get() with defaults to handle missing keys
-                        self.signals_tree.insert(
-                            "", "end",
-                            values=(
-                                signal.get("timestamp", ""),
-                                signal.get("symbol", ""),
-                                signal.get("action", "").upper(),
-                                signal.get("timeframe", ""),
-                                f"{signal.get('strength', 0)}/10",
-                                f"{signal.get('entry', 0):.5f}",
-                                f"{signal.get('stop_loss', 0):.5f}",
-                                f"{signal.get('take_profit', 0):.5f}"
-                            )
-                        )
-                    except Exception as e:
-                        logger.error(f"Error adding signal to tree: {e}")
+            if not signals:
+                logger.debug("No trading signals found in this cycle")
+                return
+                
+            logger.info(f"Displaying {len(signals)} trading signals in dashboard")
+            
+            # Add signals to treeview with better error handling
+            for signal in signals:
+                try:
+                    # Format values with proper defaults for missing fields
+                    timestamp = signal.get("timestamp", datetime.now().strftime("%Y-%m-%d %H:%M:%S"))
+                    symbol = signal.get("symbol", "")
+                    action = signal.get("action", "").upper()
+                    timeframe = signal.get("timeframe", "")
+                    
+                    # Format the strength with trade type
+                    strength_display = f"{signal.get('strength', 0):.1f}/10"
+                    if 'trade_type' in signal:
+                        strength_display += f" ({signal['trade_type']})"
+                    
+                    # Format prices with proper precision based on symbol
+                    entry = f"{signal.get('entry', 0):.5f}" if signal.get('entry') else "-"
+                    sl = f"{signal.get('stop_loss', 0):.5f}" if signal.get('stop_loss') else "-"
+                    tp = f"{signal.get('take_profit', 0):.5f}" if signal.get('take_profit') else "-"
+                    
+                    self.signals_tree.insert(
+                        "", "end",
+                        values=(timestamp, symbol, action, timeframe, strength_display, entry, sl, tp)
+                    )
+                    
+                    # Update the UI immediately to ensure signals are displayed
+                    self.root.update_idletasks()
+                    
+                except Exception as e:
+                    logger.error(f"Error adding signal to tree: {e}")
+                    import traceback
+                    logger.error(traceback.format_exc())
+            
+            # Force a refresh of the treeview
+            self.signals_tree.yview_moveto(0)
+            
         except Exception as e:
-            logger.error(f"Error updating signals: {e}")
+            logger.error(f"Error updating signals display: {e}")
+            import traceback
+            logger.error(traceback.format_exc())
     
     def update_gui_data(self):
-        """Update GUI data in a separate thread"""
+        """Update GUI data in a separate thread with improved performance"""
         while self.gui_update_running:
-            if self.account_connected.get():
-                # Update account info
-                self.refresh_account_info()
+            try:
+                if self.account_connected.get():
+                    # Define tasks that will be executed
+                    tasks = []
+                    
+                    # Only update what's necessary based on the visible tab
+                    current_tab = self.notebook.index(self.notebook.select())
+                    
+                    # Always update account info (lightweight)
+                    tasks.append(('account', self.refresh_account_info))
+                    
+                    # Update positions if positions tab is visible
+                    if current_tab == 3:  # Positions tab index
+                        tasks.append(('positions', self.refresh_positions))
+                    
+                    # Update signals if dashboard tab is visible
+                    if current_tab == 0:  # Dashboard tab index
+                        tasks.append(('signals', self.update_signals))
+                    
+                    # Execute tasks sequentially to avoid overwhelming the UI
+                    for task_name, task_func in tasks:
+                        try:
+                            task_func()
+                        except Exception as e:
+                            logger.error(f"Error updating {task_name}: {e}")
+                    
+                    # Update timestamp
+                    self.update_time_label.config(text=f"Last Update: {datetime.now().strftime('%H:%M:%S')}")
                 
-                # Update positions
-                self.refresh_positions()
-                
-                # Update signals
-                self.update_signals()
-                
-                # Update last update time
-                self.update_time_label.config(text=f"Last Update: {datetime.now().strftime('%H:%M:%S')}")
-            
-            time.sleep(2)  # Update every 2 seconds
+                # Sleep between updates - adaptive timing based on system load
+                import psutil
+                cpu_load = psutil.cpu_percent()
+                if cpu_load > 70:  # High system load
+                    time.sleep(3)  # Update less frequently
+                else:
+                    time.sleep(1.5)  # Normal update frequency
+                    
+            except Exception as e:
+                logger.error(f"Error in GUI update thread: {e}")
+                time.sleep(2)  # Recover from error
     
     def on_closing(self):
         """Handle window closing"""
