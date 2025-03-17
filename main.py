@@ -153,24 +153,15 @@ class TradingBot:
             logger.info("Disconnected from MetaTrader 5")
     
     def get_market_data(self, symbol, timeframe, bars=500):
-        """Get market data from MT5"""
+        """Get market data from MT5 with improved symbol handling"""
         try:
             # Check if this symbol has consistently failed
-            if symbol in self.failed_symbols:
-                fail_info = self.failed_symbols[symbol]
-                # If we've had too many consecutive failures, skip with less logging
-                if fail_info['count'] > 5:
-                    # Only log once every 10 attempts to reduce log spam
-                    if fail_info['count'] % 10 == 0:
-                        logger.warning(f"Skipping {symbol} {timeframe} - failed {fail_info['count']} consecutive times")
-                    # Increment count but return None
-                    self.failed_symbols[symbol]['count'] += 1
-                    return None
-                
-                # Apply exponential backoff for retry
-                last_attempt = fail_info['last_attempt']
-                if (datetime.now() - last_attempt).total_seconds() < min(300, 5 * (2 ** min(fail_info['count'], 5))):
-                    return None  # Skip this attempt based on backoff
+            if symbol in self.failed_symbols and self.failed_symbols[symbol]['count'] > 5:
+                # Skip if we've had too many failures
+                if self.failed_symbols[symbol]['count'] % 10 == 0:  # Log occasionally to reduce spam
+                    logger.warning(f"Skipping {symbol} {timeframe} - failed {self.failed_symbols[symbol]['count']} consecutive times")
+                self.failed_symbols[symbol]['count'] += 1
+                return None
             
             # Convert string timeframe to MT5 timeframe constant
             tf_map = {
@@ -182,29 +173,29 @@ class TradingBot:
             
             tf = tf_map.get(timeframe, mt5.TIMEFRAME_H1)
             
-            # Try with the original symbol name first
-            rates = mt5.copy_rates_from_pos(symbol, tf, 0, bars)
+            # Get effective symbol name - try to use our cached "working name" if available
+            effective_symbol = symbol
             
-            # If failed and symbol is one of our problem indices, try alternative names
+            # Try with the symbol name
+            rates = mt5.copy_rates_from_pos(effective_symbol, tf, 0, bars)
+            
+            # If failed and it's one of our mapped indices/symbols, try alternatives
             if (rates is None or len(rates) == 0) and symbol in self.symbol_mapping:
-                # Try each alternative symbol name
                 for alt_symbol in self.symbol_mapping[symbol]:
                     if alt_symbol == symbol:
-                        continue  # Skip the original name we already tried
+                        continue  # Skip the one we already tried
                     
                     logger.info(f"Trying alternative symbol name: {alt_symbol} for {symbol}")
-                    alt_rates = mt5.copy_rates_from_pos(alt_symbol, tf, 0, bars)
+                    rates = mt5.copy_rates_from_pos(alt_symbol, tf, 0, bars)
                     
-                    if alt_rates is not None and len(alt_rates) > 0:
-                        # If successful, update the mapping preference
+                    if rates is not None and len(rates) > 0:
                         logger.info(f"Successfully retrieved data using alternate name: {alt_symbol}")
-                        # Move the successful name to the front of the list for future attempts
+                        # Update mapping to prioritize working name
                         self.symbol_mapping[symbol].remove(alt_symbol)
                         self.symbol_mapping[symbol].insert(0, alt_symbol)
-                        rates = alt_rates
                         break
             
-            # If we still don't have data, record the failure
+            # Track failures
             if rates is None or len(rates) == 0:
                 err_msg = mt5.last_error()
                 if symbol not in self.failed_symbols:
@@ -221,11 +212,11 @@ class TradingBot:
                 logger.error(f"Failed to get data for {symbol} {timeframe}: {err_msg}")
                 return None
             
-            # If successful, reset failure tracking for this symbol
+            # Reset failure tracking on success
             if symbol in self.failed_symbols:
                 del self.failed_symbols[symbol]
             
-            # Convert to DataFrame
+            # Process data
             df = pd.DataFrame(rates)
             df['time'] = pd.to_datetime(df['time'], unit='s')
             
@@ -393,6 +384,60 @@ class TradingBot:
         except Exception as e:
             logger.error(f"Error calculating indicators: {e}")
             return df
+        
+    def get_available_symbols(self):
+        """Get available symbols from the broker"""
+        if not self.connected:
+            if not self.connect():
+                return []
+        
+        try:
+            # Get all available symbols
+            symbols = mt5.symbols_get()
+            if symbols is None:
+                logger.error("Failed to get symbols")
+                return []
+            
+            # Filter for interesting symbols (forex, indices, metals)
+            interesting_symbols = []
+            for symbol in symbols:
+                symbol_name = symbol.name
+                # Include forex majors, metals, and major indices
+                if (any(pair in symbol_name for pair in ["USD", "EUR", "GBP", "JPY", "AUD", "NZD", "CAD", "CHF"]) or
+                    any(pair in symbol_name for pair in ["SPX", "SP500", "US30", "NASDAQ", "NDX", "NAS100", "DJ", "DAX", "FTSE"]) or
+                    any(metal in symbol_name for metal in ["GOLD", "SILVER", "XAU", "XAG"])):
+                    interesting_symbols.append(symbol_name)
+            
+            logger.info(f"Found {len(interesting_symbols)} tradable symbols")
+            return sorted(interesting_symbols)
+        except Exception as e:
+            logger.error(f"Error getting symbols: {e}")
+            return []
+
+def update_symbol_mapping(self):
+    """Update the symbol mapping based on broker's available symbols"""
+    if not self.connected:
+        return
+    
+    try:
+        # Get all available symbols
+        broker_symbols = [symbol.name for symbol in mt5.symbols_get()]
+        
+        # Check for common index names and create mappings
+        us30_variants = [s for s in broker_symbols if any(x in s.upper() for x in ["US30", "DOW", "DJ30", "USTEC"])]
+        nasdaq_variants = [s for s in broker_symbols if any(x in s.upper() for x in ["NASDAQ", "NAS100", "NDX", "US100"])]
+        sp500_variants = [s for s in broker_symbols if any(x in s.upper() for x in ["SPX", "SP500", "US500"])]
+        
+        # Update the mapping with broker-specific names
+        self.symbol_mapping = {
+            "US30": us30_variants if us30_variants else ["US30", "U30USD", "DOW30"],
+            "NASDAQ": nasdaq_variants if nasdaq_variants else ["NASDAQ", "NASUSD", "NDX"],
+            "SPX500": sp500_variants if sp500_variants else ["SPX500", "SPXUSD"]
+        }
+        
+        logger.info(f"Updated symbol mappings with broker-specific names")
+    except Exception as e:
+        logger.error(f"Error updating symbol mappings: {e}")
     
     def analyze_price_action(self, df):
         """Enhanced price action analysis using advanced patterns and multi-factor confirmation"""
@@ -579,7 +624,7 @@ class TradingBot:
                     signals['confirmations'].append('rsi_bearish_divergence')
             
             # MACD Analysis
-# Fix for MACD section - ensure we're using scalar values:
+            # Fix for MACD section - ensure we're using scalar values:
             if all(col in df.columns for col in ['macd', 'macd_signal']):
                 # MACD Crossovers - use scalar values
                 macd_bullish_cross = (float(current['macd']) > float(current['macd_signal']) and 
@@ -641,10 +686,10 @@ class TradingBot:
                         signals['confirmations'].append('volume_climax_reversal')
             
             # Bollinger Band Analysis
-# Fix for the "The truth value of a Series is ambiguous" error in analyze_price_action function
-# Replace the bb_squeeze line and subsequent conditional with:
+            # Fix for the "The truth value of a Series is ambiguous" error in analyze_price_action function
+            # Replace the bb_squeeze line and subsequent conditional with:
 
-# Bollinger Band Analysis
+            # Bollinger Band Analysis
             if all(col in df.columns for col in ['bollinger_high', 'bollinger_low', 'bollinger_width']):
                 # Bollinger Band Squeeze (low volatility, potential breakout setup)
                 # Get the current bollinger width value only

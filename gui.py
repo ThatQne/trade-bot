@@ -59,6 +59,23 @@ class TradingBotGUI:
         
         # Bind closing event
         self.root.protocol("WM_DELETE_WINDOW", self.on_closing)
+
+        self.available_symbols = []
+    
+        # Create GUI variables
+        self.account_connected = tk.BooleanVar(value=False)
+        self.bot_running = tk.BooleanVar(value=False)
+        
+        # Default symbols until we get the actual list from the broker
+        available_symbols = self.bot.config["trading"]["symbols"]
+        self.selected_symbol = tk.StringVar(value=available_symbols[0] if available_symbols else "EURUSD")
+        
+        # Rest of the init code...
+        
+        # Add symbol refresh button
+        refresh_button = ttk.Button(controls_frame, text="↻", width=3, command=self.refresh_symbols)
+        refresh_button.grid(row=0, column=7, padx=5, pady=5)
+
     
     def create_menu(self):
         """Create the application menu"""
@@ -569,14 +586,38 @@ class TradingBotGUI:
         # Balance
         self.balance_label = ttk.Label(self.status_bar, text="Balance: 0.00")
         self.balance_label.pack(side="right", padx=10)
+
+    def refresh_symbols(self):
+        """Refresh available symbols from the broker"""
+        if self.account_connected.get():
+            symbols = self.bot.get_available_symbols()
+            if symbols:
+                self.available_symbols = symbols
+                
+                # Update the dropdowns
+                self.symbol_combo['values'] = symbols
+                self.chart_symbol_combo['values'] = symbols
+                
+                # Update config with new symbols
+                self.bot.config["trading"]["symbols"] = symbols[:10]  # Take first 10 as default traded symbols
+                self.bot.save_config()
+                
+                logger.info(f"Updated symbol lists with {len(symbols)} symbols from broker")
     
     def connect_to_mt5(self):
-        """Connect to MetaTrader 5 platform"""
+        """Connect to MetaTrader 5 platform and load available symbols"""
         if not self.account_connected.get():
             result = self.bot.connect()
             if result:
                 self.account_connected.set(True)
                 self.connection_label.config(text="Connected", foreground="green")
+                
+                # Update the symbol mapping from broker's data
+                self.bot.update_symbol_mapping()
+                
+                # Get available symbols from the broker
+                self.refresh_symbols()
+                
                 messagebox.showinfo("Connection", "Successfully connected to MetaTrader 5")
                 self.refresh_account_info()
                 self.refresh_positions()
@@ -866,7 +907,7 @@ class TradingBotGUI:
             messagebox.showerror("Error", "Invalid input. Please check lot size, SL, and TP values")
     
     def load_chart(self):
-        """Load and display a chart"""
+        """Load and display a chart with fixed plotting approach"""
         if not self.account_connected.get():
             messagebox.showwarning("Warning", "Not connected to MetaTrader 5")
             return
@@ -892,9 +933,6 @@ class TradingBotGUI:
         # Set datetime as index
         df.set_index("time", inplace=True)
         
-        # Create figure
-        fig = plt.figure(figsize=(10, 6), dpi=100)
-        
         # Style for the chart based on theme
         if self.theme.get() == "dark":
             plt.style.use("dark_background")
@@ -918,40 +956,48 @@ class TradingBotGUI:
             rc={'axes.labelcolor': 'black' if self.theme.get() == "light" else "white"}
         )
         
-        # Create subplots
+        # Create layout and add plots
         if 'rsi' in df.columns:
-            fig, (ax1, ax2) = plt.subplots(2, 1, figsize=(10, 6), gridspec_kw={'height_ratios': [3, 1]})
-            fig.subplots_adjust(hspace=0.1)
-            
-            # Plot candlesticks
-            mpf.plot(
-                df, type='candle', style=mpf_style,
+            # Add RSI in subplot
+            kwargs = dict(
+                figratio=(12, 8),
+                figscale=1.2,
+                volume=False,  # Don't include volume in the main plot
                 title=f"{symbol} - {timeframe}",
-                ylabel='Price',
-                ax=ax1,
-                volume=False  # Disable default volume
+                type='candle',
+                style=mpf_style,
+                addplot=[
+                    # Empty addplot to force panel creation
+                    mpf.make_addplot([], panel=1, secondary_y=False)
+                ],
+                panel_ratios=(4, 1),
+                returnfig=True  # Return the figure and axes
             )
             
-            # Plot RSI
-            ax2.plot(df.index, df['rsi'], color='blue', linewidth=0.8)
-            ax2.axhline(y=30, color='green', linestyle='-', alpha=0.3)
-            ax2.axhline(y=70, color='red', linestyle='-', alpha=0.3)
-            ax2.fill_between(df.index, df['rsi'], 30, where=(df['rsi'] < 30), color='green', alpha=0.3)
-            ax2.fill_between(df.index, df['rsi'], 70, where=(df['rsi'] > 70), color='red', alpha=0.3)
-            ax2.set_ylabel('RSI')
-            ax2.grid(True, alpha=0.3)
+            fig, axes = mpf.plot(df, **kwargs)
             
+            # Plot RSI on the secondary panel
+            axes[0].set_ylabel('Price')
+            axes[2].plot(df.index, df['rsi'], color='blue', linewidth=0.8)
+            axes[2].axhline(y=30, color='green', linestyle='-', alpha=0.3)
+            axes[2].axhline(y=70, color='red', linestyle='-', alpha=0.3)
+            axes[2].fill_between(df.index, df['rsi'], 30, where=(df['rsi'] < 30), color='green', alpha=0.3)
+            axes[2].fill_between(df.index, df['rsi'], 70, where=(df['rsi'] > 70), color='red', alpha=0.3)
+            axes[2].set_ylabel('RSI')
         else:
-            fig, ax1 = plt.subplots(1, 1, figsize=(10, 6))
-            
-            # Plot candlesticks
-            mpf.plot(
-                df, type='candle', style=mpf_style,
+            # Just plot price with volume
+            kwargs = dict(
+                figratio=(12, 8),
+                figscale=1.2,
+                volume=True,
                 title=f"{symbol} - {timeframe}",
-                ylabel='Price',
-                ax=ax1,
-                volume=True  # Enable volume in this case
+                type='candle',
+                style=mpf_style,
+                returnfig=True  # Return the figure and axes
             )
+            
+            fig, axes = mpf.plot(df, **kwargs)
+            axes[0].set_ylabel('Price')
         
         # Create Tkinter canvas
         canvas = FigureCanvasTkAgg(fig, master=self.chart_frame)
