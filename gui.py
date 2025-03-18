@@ -14,6 +14,14 @@ import sys
 import logging
 import matplotlib.dates as mdates
 
+#===============BUGS========================
+
+# the gui lags even when bot isnt running
+# dragging the risk slider crashes the program, maybe have gui run async aswel idk
+# make it so any changes made to the settings is instantly applied to the bot
+
+#===========================================
+
 # Import the trading bot
 from main import TradingBot, logger
 

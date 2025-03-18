@@ -7,11 +7,11 @@
     },
     "trading": {
         "timeframes": ["M5", "M15", "H1", "H4", "D1"],
-        "risk_percent": 25.0,
-        "max_risk_percent": 80.0,
+        "risk_percent": 30.0,
+        "max_risk_percent": 90.0,
         "min_risk_reward": 1.5,
         "max_open_trades": 10,
-        "use_trailing_stop": true,
+        "use_trailing_stop": false,
         "trailing_stop_activation": 1.0,
         "trailing_stop_distance": 0.5
     },
@@ -47,7 +47,7 @@
         }
     },
     "analysis": {
-        "min_signal_strength": 4.0,
+        "min_signal_strength": 5.0,
         "max_warnings": 3,
         "signal_expiry_minutes": 5,
         "symbols_to_analyze": 30,

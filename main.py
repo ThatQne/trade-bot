@@ -1154,29 +1154,27 @@ class TradingBot:
             return {'buy': False, 'sell': False, 'strength': 0, 'patterns': [], 'confirmations': [], 'warnings': []}, {'entry': None, 'stop_loss': None, 'take_profit': None}
 
     def _get_pip_size(self, symbol, digits):
-        """Get proper pip size based on symbol characteristics"""
-        # Standard forex pairs have 4 or 5 decimal places
-        if symbol.endswith('JPY'):
-            return 0.01 if digits == 2 else 0.001
-        elif any(x in symbol for x in ["USD", "EUR", "GBP", "AUD", "NZD", "CAD", "CHF"]):
-            return 0.0001 if digits == 4 else 0.00001
-        # Metals, indices, etc.
-        elif symbol in ["XAUUSD", "XAGUSD"]:  # Gold, Silver
-            return 0.01
-        elif symbol in ["US30", "NASDAQ", "SPX500"]:  # Indices
-            return 0.1 if digits == 1 else 1.0
+        """Accurate pip size calculation for all instrument types including exotics"""
+        # Get symbol information
+        symbol_info = mt5.symbol_info(symbol)
+        if symbol_info is None:
+            # Default fallback if symbol info not available
+            return 0.0001 if digits == 4 else (0.00001 if digits == 5 else 0.01)
+        
+        # Get point value directly from MT5
+        point = symbol_info.point
+        
+        # JPY pairs and some other currencies with 2 or 3 decimal places
+        if digits <= 3 and any(currency in symbol for currency in ["JPY", "HUF", "KRW", "IDR", "THB", "VND"]):
+            return point * 100  # 1 pip = 100 points
+            
+        # Regular forex pairs with 4 or 5 decimal places
+        elif digits == 4 or digits == 5:
+            return point * 10  # 1 pip = 10 points
+            
+        # Indices, commodities, etc
         else:
-            # Default based on digits
-            if digits == 2:
-                return 0.01
-            elif digits == 3:
-                return 0.001
-            elif digits == 4:
-                return 0.0001
-            elif digits == 5:
-                return 0.00001
-            else:
-                return 0.01
+            return point  # 1 pip = 1 point for these instruments
 
     def _get_symbol_exposure(self, symbol):
         """Calculate total exposure for a given symbol"""
@@ -1195,122 +1193,115 @@ class TradingBot:
             return 0.0
         
     def calculate_position_size(self, symbol, entry, stop_loss):
-        """Position size calculation with improved stop distance handling"""
+        """Accurate position sizing for all instruments including exotic pairs"""
         if not self.connected or entry is None or stop_loss is None:
-            return 0.0
+            return 0.01  # Minimum lot size as default
         
         try:
             # Get account info and symbol info
             account_info = mt5.account_info()
             if account_info is None:
-                return 0.0
+                return 0.01
                     
             symbol_info = mt5.symbol_info(symbol)
             if symbol_info is None:
-                return 0.0
+                return 0.01
             
-            # Use the lower of equity or balance to be conservative with risk
+            # Get risk capital
             risk_capital = min(account_info.equity, account_info.balance)
             
             # Get risk percentage from config
-            risk_percent = self.config["trading"]["risk_percent"]
-            max_risk_percent = self.config["trading"]["max_risk_percent"]
-            risk_percent = min(risk_percent, max_risk_percent)
+            risk_percent = min(self.config["trading"]["risk_percent"], 
+                            self.config["trading"]["max_risk_percent"])
             
             # Calculate risk amount
             risk_amount = risk_capital * (risk_percent / 100.0)
             
-            # Get pip size for this symbol
-            pip_size = self._get_pip_size(symbol, symbol_info.digits)
+            # Get point value directly from MT5 - most reliable approach
+            point = symbol_info.point
+            digits = symbol_info.digits
             
-            # Calculate stop loss distance in price units
+            # Get the correct pip size for this symbol
+            pip_size = self._get_pip_size(symbol, digits)
+            
+            # Calculate price distance in points
             stop_distance_price = abs(entry - stop_loss)
             
-            # Get ATR for dynamic stop sizing if available
-            atr_value = None
-            try:
-                df = self.get_market_data(symbol, "H1", 50)
-                if df is not None and len(df) > 20:
-                    atr = ta.volatility.average_true_range(df['high'], df['low'], df['close'], 14)
-                    atr_value = atr.iloc[-1]
-            except:
-                pass
-            
-            # Determine reasonable stop distance based on symbol type
-            symbol_type = self._classify_symbol_type(symbol)
-            
-            # Calculate minimum and maximum stop distances based on symbol type and ATR
-            if symbol_type == "forex":
-                if "JPY" in symbol:
-                    min_stop_pips = 10
-                    typical_stop_pips = 30 if atr_value is None else (atr_value / pip_size) * 1.5
-                    max_stop_pips = 150
-                else:
-                    min_stop_pips = 5
-                    typical_stop_pips = 20 if atr_value is None else (atr_value / pip_size) * 1.5
-                    max_stop_pips = 100
-            elif symbol_type == "metal":
-                min_stop_pips = 20
-                typical_stop_pips = 100 if atr_value is None else (atr_value / pip_size) * 1.5
-                max_stop_pips = 300
-            elif symbol_type == "index":
-                min_stop_pips = 10
-                typical_stop_pips = 50 if atr_value is None else (atr_value / pip_size) * 1.5
-                max_stop_pips = 300
-            elif symbol_type == "crypto":
-                min_stop_pips = 50
-                typical_stop_pips = 300 if atr_value is None else (atr_value / pip_size) * 1.5
-                max_stop_pips = 1000
-            else:
-                min_stop_pips = 10
-                typical_stop_pips = 50 if atr_value is None else (atr_value / pip_size) * 1.5
-                max_stop_pips = 200
-            
-            # Convert stop loss distance to pips
+            # Convert to pips (more intuitive for humans)
             stop_distance_pips = stop_distance_price / pip_size
             
-            # Check if provided stop is reasonable, otherwise use typical value
+            # Determine instrument-appropriate stop distances
+            if "JPY" in symbol:
+                min_stop_pips = 30
+                max_stop_pips = 150
+            elif any(exotic in symbol for exotic in ["HUF", "SEK", "NOK", "DKK", "PLN", "MXN", "ZAR", "TRY", "CZK"]):
+                # For exotic pairs, set sensible limits based on their typical volatility
+                min_stop_pips = 50
+                max_stop_pips = 200
+            elif "USD" in symbol or "EUR" in symbol or "GBP" in symbol:
+                # Major forex pairs
+                min_stop_pips = 10
+                max_stop_pips = 100
+            elif symbol.startswith("XAU") or symbol.startswith("GOLD"):
+                # Gold
+                min_stop_pips = 100
+                max_stop_pips = 500
+            elif any(index in symbol for index in ["SPX", "US30", "NAS", "DAX"]):
+                # Indices
+                min_stop_pips = 10
+                max_stop_pips = 100
+            else:
+                # Default
+                min_stop_pips = 20
+                max_stop_pips = 150
+                
+            # Apply min/max limits
             if stop_distance_pips < min_stop_pips:
                 logger.warning(f"{symbol}: Stop distance too small ({stop_distance_pips:.1f} pips). Using {min_stop_pips} pips.")
                 stop_distance_pips = min_stop_pips
             elif stop_distance_pips > max_stop_pips:
                 logger.warning(f"{symbol}: Stop distance too large ({stop_distance_pips:.1f} pips). Using {max_stop_pips} pips.")
                 stop_distance_pips = max_stop_pips
+                
+            # Convert stop distance back to price
+            adjusted_stop_distance = stop_distance_pips * pip_size
             
-            # Calculate position size based on risk and stop distance
-            risk_per_pip = risk_amount / stop_distance_pips
+            # Calculate value per pip - simpler and more direct approach
+            tick_value = symbol_info.trade_tick_value
+            tick_size = symbol_info.trade_tick_size
             
-            # Convert to standard lots
-            position_size = risk_per_pip / (pip_size * 10000)
-            
-            # Apply broker-specific adjustments
-            contract_size = symbol_info.trade_contract_size
-            if contract_size > 0:
-                position_size = position_size / (contract_size / 100000)
-            
-            # Check symbol exposure limits
-            open_exposure = self._get_symbol_exposure(symbol)
-            max_exposure = 10.0  # Maximum 10 lots per symbol
-            
-            if open_exposure + position_size > max_exposure:
-                position_size = max(0, max_exposure - open_exposure)
-                logger.warning(f"Limiting position size on {symbol} due to existing exposure")
-            
-            # Round to broker's lot step
-            min_lot = symbol_info.volume_min
-            lot_step = symbol_info.volume_step
-            position_size = round(max(min_lot, position_size) / lot_step) * lot_step
-            
-            # Apply maximum limit
-            position_size = min(position_size, 100.0)  # Cap at 100 lots for safety
-            
-            return position_size
-            
+            # Value of 1 pip in the account currency
+            if tick_size > 0:
+                pip_value = (pip_size / tick_size) * tick_value
+            else:
+                # Fallback calculation if tick_size is zero
+                pip_value = pip_size * 10000
+                
+            # Calculate lot size
+            if pip_value > 0 and stop_distance_pips > 0:
+                # Calculate how many lots we need to risk the desired amount
+                lot_size = risk_amount / (stop_distance_pips * pip_value)
+                
+                # Apply broker's lot size constraints
+                min_lot = symbol_info.volume_min
+                max_lot = 10.0  # Reasonable max lot size
+                lot_step = symbol_info.volume_step
+                
+                # Round to nearest lot step
+                lot_size = round(max(min_lot, min(lot_size, max_lot)) / lot_step) * lot_step
+                
+                logger.info(f"Calculated position size for {symbol}: {lot_size:.2f} lots (Risk: {risk_percent:.1f}%, Stop: {stop_distance_pips:.1f} pips)")
+                
+                return lot_size
+            else:
+                logger.warning(f"Invalid calculation values for {symbol}: pip_value={pip_value}, stop_distance_pips={stop_distance_pips}")
+                return 0.01
+                
         except Exception as e:
             logger.error(f"Error calculating position size: {e}")
             import traceback
             logger.error(traceback.format_exc())
-            return 0.01  # Return minimum lot size as fallback
+            return 0.01
     
     def execute_trade(self, symbol, trade_type, lot_size, entry_price=0, stop_loss=0, take_profit=0):
         """Execute a trade on MT5 with better error handling for non-tradable symbols"""
@@ -1821,7 +1812,7 @@ class TradingBot:
         return filtered_signals
     
     def auto_trade(self, signals):
-        """Automatically execute trades based on signals - only for visible/tradable symbols"""
+        """Automatically execute trades with improved filtering for truly tradable symbols"""
         if not self.connected or not signals:
             return []
         
@@ -1830,16 +1821,23 @@ class TradingBot:
         open_positions_count = len(positions) if positions is not None else 0
         max_positions = self.config["trading"]["max_open_trades"]
         
-        # Make sure we have the list of tradable symbols (visible symbols)
-        if not hasattr(self, 'tradable_symbols'):
-            self.get_available_symbols()
-                
-        # Filter signals to only tradable (visible) symbols
-        tradable_signals = [signal for signal in signals 
-                        if signal["symbol"] in getattr(self, 'tradable_symbols', [])]
+        # Get all truly tradable symbols by checking their properties
+        tradable_symbols = []
+        for symbol in getattr(self, 'tradable_symbols', []):
+            symbol_info = mt5.symbol_info(symbol)
+            if (symbol_info and symbol_info.visible and 
+                getattr(symbol_info, 'trade_mode', 0) == 0):
+                tradable_symbols.append(symbol)
         
-        if len(tradable_signals) < len(signals):
-            logger.info(f"Filtered out {len(signals) - len(tradable_signals)} non-visible symbols from auto-trading")
+        logger.debug(f"Found {len(tradable_symbols)} truly tradable symbols")
+        
+        # Filter signals to only truly tradable symbols
+        pre_filter_count = len(signals)
+        tradable_signals = [signal for signal in signals 
+                        if signal["symbol"] in tradable_symbols]
+        
+        if len(tradable_signals) < pre_filter_count:
+            logger.info(f"Filtered out {pre_filter_count - len(tradable_signals)} non-tradable symbols")
         
         if not tradable_signals:
             logger.info("No tradable signals available for auto-trading")
@@ -1854,8 +1852,7 @@ class TradingBot:
             # Take the strongest signals first, limited by available slots
             for signal in tradable_signals[:available_slots]:
                 try:
-                    # Apply risk percentage from config
-                    # This ensures the risk setting is properly used for every trade
+                    # Calculate position size with the entry and stop loss from the signal
                     lot_size = self.calculate_position_size(
                         signal["symbol"],
                         signal["entry"],
@@ -1865,7 +1862,12 @@ class TradingBot:
                     # Update lot size in the signal
                     signal["lot_size"] = lot_size
                     
+                    if lot_size < 0.01:
+                        logger.warning(f"Position size too small for {signal['symbol']}: {lot_size}. Skipping trade.")
+                        continue
+                    
                     # Execute the trade
+                    logger.info(f"Executing {signal['action']} trade on {signal['symbol']} with {lot_size} lots")
                     result = self.execute_trade(
                         signal["symbol"],
                         signal["action"],
@@ -1886,9 +1888,10 @@ class TradingBot:
                             "take_profit": signal["take_profit"],
                             "timestamp": datetime.now().strftime("%Y-%m-%d %H:%M:%S")
                         })
+                        logger.info(f"Trade executed successfully: {signal['symbol']} {signal['action'].upper()}")
                 except Exception as e:
                     logger.error(f"Error executing trade for {signal['symbol']}: {e}")
-        
+            
         return executed_trades
     
     def start(self):
