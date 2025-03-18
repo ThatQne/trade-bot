@@ -55,18 +55,17 @@ class TradingBot:
         """Return default configuration if config file not found"""
         return {
             "account": {
-                "login": 0,
-                "password": "",
-                "server": "",
+                "login": 969142,
+                "password": "!tKi1wPx",
+                "server": "Coinexx-Live",
                 "path": "C:\\Program Files\\MetaTrader 5\\terminal64.exe"
             },
             "trading": {
-                "symbols": ["EURUSD", "GBPUSD", "XAUUSD", "US30", "NASDAQ", "SPX500"],
-                "timeframes": ["M5", "M15", "H1"],
-                "risk_percent": 2.0,
-                "max_risk_percent": 20.0,
-                "min_risk_reward": 2.0,
-                "max_open_trades": 5,
+                "timeframes": ["M5", "M15", "H1", "H4", "D1"],
+                "risk_percent": 30.0,
+                "max_risk_percent": 90.0,
+                "min_risk_reward": 1.5,
+                "max_open_trades": 10,
                 "use_trailing_stop": True,
                 "trailing_stop_activation": 1.0,
                 "trailing_stop_distance": 0.5
@@ -102,11 +101,21 @@ class TradingBot:
                     }
                 }
             },
+            "analysis": {
+                "min_signal_strength": 5.0,
+                "max_warnings": 3,
+                "signal_expiry_minutes": 5,
+                "symbols_to_analyze": 30,
+                "symbol_refresh_interval": 15,
+                "analysis_interval": 15,
+                "repeat_analysis_interval": 15
+            },
             "gui": {
                 "theme": "dark",
                 "update_interval": 1.0,
                 "chart_periods": ["1H", "4H", "1D"]
-            }
+            },
+            "auto_trading": True
         }
     
     def connect(self):
@@ -1812,7 +1821,7 @@ class TradingBot:
         return filtered_signals
     
     def auto_trade(self, signals):
-        """Automatically execute trades with improved filtering for truly tradable symbols"""
+        """Enhanced auto-trade function with detailed debug information"""
         if not self.connected or not signals:
             return []
         
@@ -1820,39 +1829,77 @@ class TradingBot:
         positions = mt5.positions_get()
         open_positions_count = len(positions) if positions is not None else 0
         max_positions = self.config["trading"]["max_open_trades"]
+        logger.info(f"Auto-trade: {open_positions_count}/{max_positions} positions currently open")
         
-        # Get all truly tradable symbols by checking their properties
+        # Get tradable symbols with detailed status
         tradable_symbols = []
+        non_tradable_reasons = {}
+        
         for symbol in getattr(self, 'tradable_symbols', []):
             symbol_info = mt5.symbol_info(symbol)
-            if (symbol_info and symbol_info.visible and 
-                getattr(symbol_info, 'trade_mode', 0) == 0):
-                tradable_symbols.append(symbol)
+            if symbol_info:
+                is_visible = bool(symbol_info.visible)
+                trade_mode = getattr(symbol_info, 'trade_mode', -1)
+                trade_allowed = getattr(symbol_info, 'trade_allowed', False)
+                
+                if is_visible and trade_mode == 0:
+                    tradable_symbols.append(symbol)
+                else:
+                    reason = []
+                    if not is_visible:
+                        reason.append("not visible")
+                    if trade_mode != 0:
+                        reason.append(f"trade_mode={trade_mode}")
+                    if not trade_allowed:
+                        reason.append("trading not allowed")
+                    non_tradable_reasons[symbol] = ", ".join(reason)
         
-        logger.debug(f"Found {len(tradable_symbols)} truly tradable symbols")
+        logger.debug(f"Auto-trade: Found {len(tradable_symbols)}/{len(getattr(self, 'tradable_symbols', []))} tradable symbols")
         
-        # Filter signals to only truly tradable symbols
+        # Log reasons for non-tradable symbols (limit to 10 for brevity)
+        if non_tradable_reasons:
+            examples = list(non_tradable_reasons.items())[:10]
+            logger.debug(f"Non-tradable symbols examples: {examples}")
+        
+        # Filter signals to only truly tradable symbols with reasons
         pre_filter_count = len(signals)
-        tradable_signals = [signal for signal in signals 
-                        if signal["symbol"] in tradable_symbols]
+        tradable_signals = []
+        filtered_signals = []
         
-        if len(tradable_signals) < pre_filter_count:
-            logger.info(f"Filtered out {pre_filter_count - len(tradable_signals)} non-tradable symbols")
+        for signal in signals:
+            if signal["symbol"] in tradable_symbols:
+                tradable_signals.append(signal)
+            else:
+                reason = non_tradable_reasons.get(signal["symbol"], "unknown reason")
+                filtered_signals.append({"symbol": signal["symbol"], "reason": reason})
+        
+        if filtered_signals:
+            logger.info(f"Auto-trade: Filtered out {len(filtered_signals)} non-tradable signals")
+            for filtered in filtered_signals[:5]:  # Show first 5
+                logger.debug(f"Skipped {filtered['symbol']}: {filtered['reason']}")
         
         if not tradable_signals:
-            logger.info("No tradable signals available for auto-trading")
+            logger.info("Auto-trade: No tradable signals available")
             return []
         
+        logger.info(f"Auto-trade: Found {len(tradable_signals)} tradable signals")
+        
         executed_trades = []
+        skipped_trades = []
         
         # If we have room for more positions
         if open_positions_count < max_positions:
             available_slots = max_positions - open_positions_count
+            logger.info(f"Auto-trade: Can open {available_slots} new positions")
             
             # Take the strongest signals first, limited by available slots
             for signal in tradable_signals[:available_slots]:
                 try:
-                    # Calculate position size with the entry and stop loss from the signal
+                    logger.info(f"Auto-trade: Processing signal for {signal['symbol']} ({signal['action']}) - strength: {signal['strength']}")
+                    logger.debug(f"Signal details: {signal}")
+                    
+                    # Calculate position size with detailed logging
+                    logger.debug(f"Calculating position size for {signal['symbol']} with entry={signal['entry']}, stop={signal['stop_loss']}")
                     lot_size = self.calculate_position_size(
                         signal["symbol"],
                         signal["entry"],
@@ -1862,12 +1909,15 @@ class TradingBot:
                     # Update lot size in the signal
                     signal["lot_size"] = lot_size
                     
+                    # Verify minimum position size
                     if lot_size < 0.01:
-                        logger.warning(f"Position size too small for {signal['symbol']}: {lot_size}. Skipping trade.")
+                        reason = f"Position size too small: {lot_size}"
+                        logger.warning(f"Auto-trade: {reason}")
+                        skipped_trades.append({"symbol": signal["symbol"], "reason": reason})
                         continue
                     
-                    # Execute the trade
-                    logger.info(f"Executing {signal['action']} trade on {signal['symbol']} with {lot_size} lots")
+                    # Execute the trade with detailed logging
+                    logger.info(f"Auto-trade: Executing {signal['action']} on {signal['symbol']} with {lot_size} lots")
                     result = self.execute_trade(
                         signal["symbol"],
                         signal["action"],
@@ -1878,6 +1928,7 @@ class TradingBot:
                     )
                     
                     if result is not None:
+                        logger.info(f"Auto-trade: Successfully executed trade on {signal['symbol']} (ticket: {result.order})")
                         executed_trades.append({
                             "ticket": result.order,
                             "symbol": signal["symbol"],
@@ -1888,10 +1939,23 @@ class TradingBot:
                             "take_profit": signal["take_profit"],
                             "timestamp": datetime.now().strftime("%Y-%m-%d %H:%M:%S")
                         })
-                        logger.info(f"Trade executed successfully: {signal['symbol']} {signal['action'].upper()}")
+                    else:
+                        reason = "Trade execution failed"
+                        logger.error(f"Auto-trade: {reason} for {signal['symbol']}")
+                        skipped_trades.append({"symbol": signal["symbol"], "reason": reason})
+                        
                 except Exception as e:
-                    logger.error(f"Error executing trade for {signal['symbol']}: {e}")
+                    logger.error(f"Auto-trade: Error trading {signal['symbol']}: {e}")
+                    skipped_trades.append({"symbol": signal["symbol"], "reason": str(e)})
             
+            # Summary
+            if executed_trades:
+                logger.info(f"Auto-trade: Successfully executed {len(executed_trades)} trades")
+            if skipped_trades:
+                logger.info(f"Auto-trade: Skipped {len(skipped_trades)} trades")
+        else:
+            logger.info(f"Auto-trade: Maximum positions reached ({open_positions_count}/{max_positions})")
+        
         return executed_trades
     
     def start(self):

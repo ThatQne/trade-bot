@@ -14,14 +14,6 @@ import sys
 import logging
 import matplotlib.dates as mdates
 
-#===============BUGS========================
-
-# the gui lags even when bot isnt running
-# dragging the risk slider crashes the program, maybe have gui run async aswel idk
-# make it so any changes made to the settings is instantly applied to the bot
-
-#===========================================
-
 # Import the trading bot
 from main import TradingBot, logger
 
@@ -192,10 +184,17 @@ class TradingBotGUI:
         columns = ("Time", "Symbol", "Action", "Timeframe", "Strength", "Entry", "SL", "TP")
         self.signals_tree = ttk.Treeview(signals_frame, columns=columns, show="headings")
         
+        # Configure column headings with sort functionality
+        self.sort_column = "Strength"  # Default sort column
+        self.sort_reverse = True       # Default sort direction (descending)
+        
         for col in columns:
-            self.signals_tree.heading(col, text=col)
+            self.signals_tree.heading(col, text=col, 
+                                    command=lambda c=col: self.sort_signal_column(c))
             self.signals_tree.column(col, width=80)
         
+        # Show sort indicator on the default column
+        self.signals_tree.heading(self.sort_column, text=f"{self.sort_column} ↓")
         self.signals_tree.grid(row=0, column=0, sticky="nsew")
         
         # Add scrollbar
@@ -604,8 +603,58 @@ class TradingBotGUI:
         ttk.Button(button_frame, text="Cancel", command=self.load_settings).pack(side="right", padx=5)
         ttk.Button(button_frame, text="Reset to Defaults", command=self.reset_settings).pack(side="left", padx=5)
         
+
+        self.live_update = tk.BooleanVar(value=True)
+        ttk.Checkbutton(
+            button_frame, text="Apply changes immediately", 
+            variable=self.live_update
+        ).pack(side="left", padx=5)
+        
+        # Bind change events to all settings fields
+        for entry_widget in [self.risk_entry, self.max_risk_entry, self.min_rr_entry, 
+                        self.max_trades_entry, self.trailing_activation_entry,
+                        self.trailing_distance_entry]:
+            entry_widget.bind("<FocusOut>", self.live_update_settings)
+        
+        # Add validation and binding to checkbuttons
+        self.use_trailing.trace_add("write", self.live_update_settings)
+        self.use_price_action.trace_add("write", self.live_update_settings)
+        self.use_volume.trace_add("write", self.live_update_settings)
+        self.use_rsi.trace_add("write", self.live_update_settings)
+        self.use_macd.trace_add("write", self.live_update_settings)
+        self.use_sr.trace_add("write", self.live_update_settings)
+    
         # Add notebook to frame
         settings_notebook.pack(fill="both", expand=True, padx=5, pady=5)
+
+    def live_update_settings(self, *args):
+        """Update settings in real-time if enabled"""
+        if not self.live_update.get():
+            return
+        
+        try:
+            # Update trading settings in memory
+            if "trading" in self.bot.config:
+                self.bot.config["trading"]["risk_percent"] = float(self.risk_entry.get())
+                self.bot.config["trading"]["max_risk_percent"] = float(self.max_risk_entry.get())
+                self.bot.config["trading"]["min_risk_reward"] = float(self.min_rr_entry.get())
+                self.bot.config["trading"]["max_open_trades"] = int(self.max_trades_entry.get())
+                self.bot.config["trading"]["use_trailing_stop"] = self.use_trailing.get()
+                self.bot.config["trading"]["trailing_stop_activation"] = float(self.trailing_activation_entry.get())
+                self.bot.config["trading"]["trailing_stop_distance"] = float(self.trailing_distance_entry.get())
+            
+            # Update strategy settings in memory
+            if "strategy" in self.bot.config:
+                self.bot.config["strategy"]["price_action"]["enabled"] = self.use_price_action.get()
+                self.bot.config["strategy"]["volume"]["enabled"] = self.use_volume.get()
+                self.bot.config["strategy"]["indicators"]["rsi"]["enabled"] = self.use_rsi.get()
+                self.bot.config["strategy"]["indicators"]["macd"]["enabled"] = self.use_macd.get()
+                self.bot.config["strategy"]["indicators"]["support_resistance"]["enabled"] = self.use_sr.get()
+            
+            # Don't save to file yet - that happens when Save is clicked
+            logger.debug("Settings updated in memory (live update)")
+        except Exception as e:
+            logger.error(f"Error in live settings update: {e}")
     
     def create_status_bar(self):
         """Create status bar at the bottom of the window"""
@@ -885,7 +934,7 @@ class TradingBotGUI:
             self.refresh_positions()
     
     def analyze_symbol(self):
-        """Analyze selected symbol with correct timeframe handling"""
+        """Analyze selected symbol with improved error handling and async processing"""
         if not self.account_connected.get():
             messagebox.showwarning("Warning", "Not connected to MetaTrader 5")
             return
@@ -893,29 +942,82 @@ class TradingBotGUI:
         symbol = self.symbol_combo.get()
         timeframe = self.timeframe_combo.get()
         
+        # Disable analyze button during analysis
+        analyze_button = None
+        for child in self.symbol_combo.master.winfo_children():
+            if isinstance(child, ttk.Button) and "Analyze" in child["text"]:
+                analyze_button = child
+                child.config(state="disabled", text="Analyzing...")
+                break
+        
         # Clear previous analysis
         self.analysis_text.delete(1.0, tk.END)
         self.analysis_text.insert(tk.END, f"Analyzing {symbol} on {timeframe} timeframe...\n\n")
         self.root.update_idletasks()  # Force UI update
         
-        try:
-            # Analyze this specific symbol only
-            df = self.bot.get_market_data(symbol, timeframe)
-            if df is None or len(df) == 0:
-                self.analysis_text.insert(tk.END, "No data available for this symbol/timeframe.")
-                return
+        # Create a thread for analysis to prevent UI freezing
+        def run_analysis():
+            try:
+                # Get market data
+                df = self.bot.get_market_data(symbol, timeframe)
+                if df is None or len(df) == 0:
+                    self.root.after(0, lambda: self._update_analysis_text(
+                        "No data available for this symbol/timeframe or symbol not found.\n"
+                        "Check if the symbol is available from your broker."))
+                    return
                 
-            # Calculate indicators
-            df = self.bot.calculate_indicators(df)
-            if df is None:
-                self.analysis_text.insert(tk.END, "Error calculating indicators.")
-                return
-            
-            # Analyze price action
-            pa_signals, levels = self.bot.analyze_price_action(df)
-            if pa_signals is None:
-                self.analysis_text.insert(tk.END, "No analyzable patterns found.")
-                return
+                # Calculate indicators
+                df = self.bot.calculate_indicators(df)
+                if df is None or len(df) == 0:
+                    self.root.after(0, lambda: self._update_analysis_text(
+                        "Error calculating indicators. Insufficient data points."))
+                    return
+                
+                # Analyze price action
+                try:
+                    pa_signals, levels = self.bot.analyze_price_action(df)
+                    if pa_signals is None:
+                        self.root.after(0, lambda: self._update_analysis_text(
+                            "No analyzable patterns found."))
+                        return
+                except Exception as e:
+                    logger.error(f"Error in price action analysis: {e}")
+                    self.root.after(0, lambda: self._update_analysis_text(
+                        f"Error analyzing price action: {str(e)}"))
+                    return
+                
+                # Update the UI from the main thread
+                self.root.after(0, lambda: self._display_analysis_results(
+                    symbol, timeframe, pa_signals, levels, df))
+                
+            except Exception as e:
+                logger.error(f"Error analyzing symbol {symbol}: {e}")
+                import traceback
+                logger.error(traceback.format_exc())
+                self.root.after(0, lambda: self._update_analysis_text(
+                    f"Error during analysis: {str(e)}\n\n"
+                    f"This might be due to data issues or the symbol not being supported by your broker."))
+            finally:
+                # Re-enable analyze button
+                if analyze_button:
+                    self.root.after(0, lambda: analyze_button.config(state="normal", text="Analyze"))
+        
+        # Start analysis in a separate thread
+        threading.Thread(target=run_analysis, daemon=True).start()
+
+    def _update_analysis_text(self, message):
+        """Update the analysis text with error or status messages"""
+        self.analysis_text.delete(1.0, tk.END)
+        self.analysis_text.insert(tk.END, message)
+
+    def _display_analysis_results(self, symbol, timeframe, pa_signals, levels, df):
+        """Display analysis results in the text widget"""
+        # Clear previous text
+        self.analysis_text.delete(1.0, tk.END)
+        
+        try:
+            # Get the last row data
+            last_row = df.iloc[-1].copy() if len(df) > 0 else None
             
             # Display results
             if pa_signals["buy"] or pa_signals["sell"]:
@@ -936,59 +1038,80 @@ class TradingBotGUI:
                     self.analysis_text.insert(tk.END, f"Warnings: {', '.join(warnings)}\n")
                 
                 self.analysis_text.insert(tk.END, "\nTrade parameters:\n")
-                if levels['entry']:
+                
+                # Handle potential None values by checking explicitly
+                if levels.get('entry') is not None:
                     self.analysis_text.insert(tk.END, f"Entry price: {levels['entry']:.5f}\n")
-                if levels['stop_loss']:
+                if levels.get('stop_loss') is not None:
                     self.analysis_text.insert(tk.END, f"Stop loss: {levels['stop_loss']:.5f}\n")
-                if levels['take_profit']:
+                if levels.get('take_profit') is not None:
                     self.analysis_text.insert(tk.END, f"Take profit: {levels['take_profit']:.5f}\n")
                     
-                # Calculate risk metrics
-                if levels["entry"] and levels["stop_loss"]:
-                    # Calculate lot size
-                    lot_size = self.bot.calculate_position_size(symbol, levels["entry"], levels["stop_loss"])
-                    
-                    risk_pips = abs(levels["entry"] - levels["stop_loss"]) * 10000
-                    reward_pips = abs(levels["entry"] - levels["take_profit"]) * 10000
-                    rr_ratio = reward_pips / risk_pips if risk_pips > 0 else 0
-                    
-                    self.analysis_text.insert(tk.END, f"Position size: {lot_size:.2f} lots\n")
-                    self.analysis_text.insert(tk.END, f"Risk: {risk_pips:.1f} pips\n")
-                    self.analysis_text.insert(tk.END, f"Reward: {reward_pips:.1f} pips\n")
-                    self.analysis_text.insert(tk.END, f"Risk/Reward ratio: 1:{rr_ratio:.2f}\n")
-                    
-                    # Pre-fill the manual trading fields
-                    self.action_combo.set("Buy" if pa_signals['buy'] else "Sell")
-                    self.lot_entry.delete(0, tk.END)
-                    self.lot_entry.insert(0, f"{lot_size:.2f}")
-                    self.sl_entry.delete(0, tk.END)
-                    self.sl_entry.insert(0, f"{levels['stop_loss']:.5f}")
-                    self.tp_entry.delete(0, tk.END)
-                    self.tp_entry.insert(0, f"{levels['take_profit']:.5f}")
+                # Calculate risk metrics if we have the needed values
+                if levels.get("entry") is not None and levels.get("stop_loss") is not None:
+                    try:
+                        # Calculate lot size
+                        lot_size = self.bot.calculate_position_size(symbol, levels["entry"], levels["stop_loss"])
+                        
+                        risk_pips = abs(levels["entry"] - levels["stop_loss"]) * 10000
+                        
+                        # Make sure take_profit is available before calculating reward
+                        if levels.get("take_profit") is not None:
+                            reward_pips = abs(levels["entry"] - levels["take_profit"]) * 10000
+                            rr_ratio = reward_pips / risk_pips if risk_pips > 0 else 0
+                        else:
+                            reward_pips = 0
+                            rr_ratio = 0
+                        
+                        self.analysis_text.insert(tk.END, f"Position size: {lot_size:.2f} lots\n")
+                        self.analysis_text.insert(tk.END, f"Risk: {risk_pips:.1f} pips\n")
+                        
+                        if reward_pips > 0:
+                            self.analysis_text.insert(tk.END, f"Reward: {reward_pips:.1f} pips\n")
+                            self.analysis_text.insert(tk.END, f"Risk/Reward ratio: 1:{rr_ratio:.2f}\n")
+                        
+                        # Pre-fill the manual trading fields
+                        self.action_combo.set("Buy" if pa_signals['buy'] else "Sell")
+                        self.lot_entry.delete(0, tk.END)
+                        self.lot_entry.insert(0, f"{lot_size:.2f}")
+                        
+                        if levels.get('stop_loss') is not None:
+                            self.sl_entry.delete(0, tk.END)
+                            self.sl_entry.insert(0, f"{levels['stop_loss']:.5f}")
+                        
+                        if levels.get('take_profit') is not None:
+                            self.tp_entry.delete(0, tk.END)
+                            self.tp_entry.insert(0, f"{levels['take_profit']:.5f}")
+                    except Exception as e:
+                        logger.error(f"Error calculating position metrics: {e}")
+                        self.analysis_text.insert(tk.END, f"\nError calculating position metrics: {str(e)}\n")
             else:
                 self.analysis_text.insert(tk.END, "No tradable signals found at this time.\n")
                 self.analysis_text.insert(tk.END, "\nCurrent market conditions:\n")
                 
-                # Show price relative to key MAs
-                last_row = df.iloc[-1]
-                
-                if 'ma50' in last_row and 'ma200' in last_row:
-                    price_ma50 = "above" if last_row['close'] > last_row['ma50'] else "below"
-                    price_ma200 = "above" if last_row['close'] > last_row['ma200'] else "below"
-                    ma_trend = "bullish" if last_row['ma50'] > last_row['ma200'] else "bearish"
-                    
-                    self.analysis_text.insert(tk.END, f"Price is {price_ma50} 50 MA and {price_ma200} 200 MA\n")
-                    self.analysis_text.insert(tk.END, f"MA trend is {ma_trend} (50 vs 200)\n")
-                
-                if 'rsi' in last_row:
-                    rsi_val = last_row['rsi']
-                    rsi_state = "oversold" if rsi_val < 30 else "overbought" if rsi_val > 70 else "neutral"
-                    self.analysis_text.insert(tk.END, f"RSI: {rsi_val:.1f} ({rsi_state})\n")
+                # Show price relative to key MAs if available
+                if last_row is not None:
+                    try:
+                        if 'ma50' in last_row and 'ma200' in last_row:
+                            # Use explicit float conversion to avoid Series truth value issues
+                            price_ma50 = "above" if float(last_row['close']) > float(last_row['ma50']) else "below"
+                            price_ma200 = "above" if float(last_row['close']) > float(last_row['ma200']) else "below"
+                            ma_trend = "bullish" if float(last_row['ma50']) > float(last_row['ma200']) else "bearish"
+                            
+                            self.analysis_text.insert(tk.END, f"Price is {price_ma50} 50 MA and {price_ma200} 200 MA\n")
+                            self.analysis_text.insert(tk.END, f"MA trend is {ma_trend} (50 vs 200)\n")
+                        
+                        if 'rsi' in last_row:
+                            rsi_val = float(last_row['rsi'])
+                            rsi_state = "oversold" if rsi_val < 30 else "overbought" if rsi_val > 70 else "neutral"
+                            self.analysis_text.insert(tk.END, f"RSI: {rsi_val:.1f} ({rsi_state})\n")
+                    except Exception as e:
+                        logger.error(f"Error showing market conditions: {e}")
         except Exception as e:
-            logger.error(f"Error analyzing symbol: {str(e)}")
+            logger.error(f"Error displaying analysis results: {e}")
             import traceback
             logger.error(traceback.format_exc())
-            self.analysis_text.insert(tk.END, f"Error during analysis: {str(e)}")
+            self.analysis_text.insert(tk.END, f"Error displaying analysis: {str(e)}")
     
     def execute_manual_trade(self):
         """Execute a manual trade based on user input"""
@@ -1349,63 +1472,123 @@ class TradingBotGUI:
             self.bot.config["gui"]["theme"] = "light"
             self.bot.save_config()
 
-    def update_signals(self):
-        """Update signals display with better persistence"""
+    def sort_signal_column(self, column):
+        """Sort signals by clicking on column headers"""
+        # If already sorting by this column, reverse direction
+        if self.sort_column == column:
+            self.sort_reverse = not self.sort_reverse
+        else:
+            # Save new sort column and reset to descending
+            self.sort_column = column
+            self.sort_reverse = True
+        
+        # Update column headings to show sort direction
+        for col in self.signals_tree["columns"]:
+            # Remove any existing sort indicator
+            text = col.replace(" ↑", "").replace(" ↓", "")
+            if col == self.sort_column:
+                text += " ↓" if self.sort_reverse else " ↑"
+            self.signals_tree.heading(col, text=text)
+        
+        # Perform the sort
+        if hasattr(self, 'stored_signals'):
+            self.update_signals(resort=True)
+
+    def update_signals(self, resort=False):
+        """Update signals display with sorting capability"""
         if not self.account_connected.get():
             return
                 
         try:
-            # Get recent signals
-            current_signals = self.bot.run_trading_cycle()
-            
-            # Get current time for expiration check
-            current_time = datetime.now()
-            
-            # Get signal expiry time from config
-            signal_expiry_minutes = self.bot.config.get("analysis", {}).get("signal_expiry_minutes", 5)
-            
-            # Store signals with timestamp if not already present
-            if not hasattr(self, 'stored_signals'):
-                self.stored_signals = []
-            
-            # Process new signals - add them to stored signals
-            if current_signals:
-                for signal in current_signals:
-                    # Add expiry time to new signals (configurable minutes from now)
-                    signal['expiry_time'] = current_time + timedelta(minutes=signal_expiry_minutes)
-                    
-                    # Check if signal already exists (same symbol, timeframe, action)
-                    existing_signal = next((s for s in self.stored_signals 
-                                        if s['symbol'] == signal['symbol'] 
-                                        and s['timeframe'] == signal['timeframe']
-                                        and s['action'] == signal['action']), None)
-                    
-                    if existing_signal:
-                        # Update existing signal with new data
-                        existing_signal.update(signal)
-                    else:
-                        # Add new signal to stored signals
-                        self.stored_signals.append(signal)
-                        logger.info(f"New signal added: {signal['symbol']} {signal['timeframe']} {signal['action']}")
-            
-            # Get minimum strength threshold from config
-            min_strength = self.bot.config.get("analysis", {}).get("min_signal_strength", 4.0)
-            
-            # Remove expired signals or signals with strength below threshold
-            self.stored_signals = [s for s in self.stored_signals 
-                                if s['expiry_time'] > current_time and s['strength'] >= min_strength]
+            # Get recent signals if we're not just resorting
+            if not resort:
+                current_signals = self.bot.run_trading_cycle()
+                
+                # Get current time for expiration check
+                current_time = datetime.now()
+                
+                # Get signal expiry time from config
+                signal_expiry_minutes = self.bot.config.get("analysis", {}).get("signal_expiry_minutes", 5)
+                
+                # Store signals with timestamp if not already present
+                if not hasattr(self, 'stored_signals'):
+                    self.stored_signals = []
+                
+                # Process new signals
+                if current_signals:
+                    for signal in current_signals:
+                        # Add expiry time to new signals
+                        signal['expiry_time'] = current_time + timedelta(minutes=signal_expiry_minutes)
+                        
+                        # Check if signal already exists
+                        existing_signal = next((s for s in self.stored_signals 
+                                            if s['symbol'] == signal['symbol'] 
+                                            and s['timeframe'] == signal['timeframe']
+                                            and s['action'] == signal['action']), None)
+                        
+                        if existing_signal:
+                            # Update existing signal with new data
+                            existing_signal.update(signal)
+                        else:
+                            # Add new signal to stored signals
+                            self.stored_signals.append(signal)
+                            logger.info(f"New signal added: {signal['symbol']} {signal['timeframe']} {signal['action']}")
+                
+                # Get minimum strength threshold from config
+                min_strength = self.bot.config.get("analysis", {}).get("min_signal_strength", 4.0)
+                
+                # Remove expired signals or signals with strength below threshold
+                self.stored_signals = [s for s in self.stored_signals 
+                                    if s['expiry_time'] > current_time and s['strength'] >= min_strength]
             
             # Clear existing signals in treeview
             for item in self.signals_tree.get_children():
                 self.signals_tree.delete(item)
             
-            # Add all stored signals to treeview
-            if self.stored_signals:
+            # Add all stored signals to treeview with sorting
+            if hasattr(self, 'stored_signals') and self.stored_signals:
                 logger.debug(f"Displaying {len(self.stored_signals)} signals in dashboard")
                 
-                # Sort signals by strength
-                sorted_signals = sorted(self.stored_signals, key=lambda x: x['strength'], reverse=True)
+                # Sort signals based on current sort column and direction
+                if self.sort_column == "Time":
+                    sorted_signals = sorted(self.stored_signals, 
+                                        key=lambda x: x.get('timestamp', ''),
+                                        reverse=self.sort_reverse)
+                elif self.sort_column == "Symbol":
+                    sorted_signals = sorted(self.stored_signals, 
+                                        key=lambda x: x.get('symbol', ''),
+                                        reverse=self.sort_reverse)
+                elif self.sort_column == "Action":
+                    sorted_signals = sorted(self.stored_signals, 
+                                        key=lambda x: x.get('action', ''),
+                                        reverse=self.sort_reverse)
+                elif self.sort_column == "Timeframe":
+                    sorted_signals = sorted(self.stored_signals, 
+                                        key=lambda x: x.get('timeframe', ''),
+                                        reverse=self.sort_reverse)
+                elif self.sort_column == "Strength":
+                    sorted_signals = sorted(self.stored_signals, 
+                                        key=lambda x: float(x.get('strength', 0)),
+                                        reverse=self.sort_reverse)
+                elif self.sort_column == "Entry":
+                    sorted_signals = sorted(self.stored_signals, 
+                                        key=lambda x: float(x.get('entry', 0) or 0),
+                                        reverse=self.sort_reverse)
+                elif self.sort_column == "SL":
+                    sorted_signals = sorted(self.stored_signals, 
+                                        key=lambda x: float(x.get('stop_loss', 0) or 0),
+                                        reverse=self.sort_reverse)
+                elif self.sort_column == "TP":
+                    sorted_signals = sorted(self.stored_signals, 
+                                        key=lambda x: float(x.get('take_profit', 0) or 0),
+                                        reverse=self.sort_reverse)
+                else:
+                    # Default sort by strength
+                    sorted_signals = sorted(self.stored_signals, 
+                                        key=lambda x: float(x.get('strength', 0)),
+                                        reverse=True)
                 
+                # Display the sorted signals
                 for signal in sorted_signals:
                     try:
                         # Format values with proper defaults for missing fields
@@ -1431,16 +1614,12 @@ class TradingBotGUI:
                         
                     except Exception as e:
                         logger.error(f"Error adding signal to tree: {e}")
-                        import traceback
-                        logger.error(traceback.format_exc())
                 
                 # Force a refresh of the treeview
                 self.signals_tree.yview_moveto(0)
-                
+                    
         except Exception as e:
             logger.error(f"Error updating signals display: {e}")
-            import traceback
-            logger.error(traceback.format_exc())
     
     def update_gui_data(self):
         """Update GUI data in a separate thread with improved performance"""
